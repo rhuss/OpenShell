@@ -1129,6 +1129,7 @@ async fn sandbox_create_keeps_command_sessions_by_default() {
             command: &["echo".into(), "OK".into()],
             ..test_config()
         },
+
         &tls,
     )
     .await
@@ -1161,6 +1162,7 @@ async fn sandbox_create_sends_cpu_and_memory_limits_only() {
             command: &["echo".into(), "OK".into()],
             ..test_config()
         },
+
         &tls,
     )
     .await
@@ -1228,6 +1230,7 @@ async fn sandbox_create_sends_driver_config_json() {
             command: &["echo".into(), "OK".into()],
             ..test_config()
         },
+
         &tls,
     )
     .await
@@ -1358,6 +1361,7 @@ async fn sandbox_create_does_not_infer_command_providers_when_v2_enabled() {
             tty_override: Some(true),
             ..test_config()
         },
+
         &tls,
     )
     .await
@@ -1403,6 +1407,7 @@ async fn sandbox_create_returns_vm_error_without_waiting_for_timeout() {
             command: &["echo".into(), "OK".into()],
             ..test_config()
         },
+
         &tls,
     )
     .await
@@ -1444,6 +1449,7 @@ async fn sandbox_create_keeps_waiting_while_vm_progress_arrives() {
             command: &["echo".into(), "OK".into()],
             ..test_config()
         },
+
         &tls,
     )
     .await
@@ -1477,6 +1483,7 @@ async fn sandbox_create_times_out_when_only_logs_arrive() {
             command: &["echo".into(), "OK".into()],
             ..test_config()
         },
+
         &tls,
     )
     .await
@@ -1507,6 +1514,7 @@ async fn sandbox_create_deletes_command_sessions_with_no_keep() {
             command: &["echo".into(), "OK".into()],
             ..test_config()
         },
+
         &tls,
     )
     .await
@@ -1541,6 +1549,7 @@ async fn sandbox_create_deletes_shell_sessions_with_no_keep() {
             tty_override: Some(true),
             ..test_config()
         },
+
         &tls,
     )
     .await
@@ -1574,6 +1583,7 @@ async fn sandbox_create_keeps_sandbox_with_hidden_keep_flag() {
             command: &["echo".into(), "OK".into()],
             ..test_config()
         },
+
         &tls,
     )
     .await
@@ -1609,6 +1619,7 @@ async fn sandbox_create_keeps_sandbox_with_forwarding() {
             command: &["echo".into(), "OK".into()],
             ..test_config()
         },
+
         &tls,
     )
     .await
@@ -1748,6 +1759,7 @@ async fn sandbox_create_sends_environment_variables() {
             ]),
             ..test_config()
         },
+
         &tls,
     )
     .await
