@@ -1,6 +1,6 @@
 # Brainstorm Overview
 
-Last updated: 2026-07-09
+Last updated: 2026-07-10
 
 ## Sessions
 
@@ -10,6 +10,7 @@ Last updated: 2026-07-09
 | 02 | 2026-07-09 | cluster-setup | active | - | - |
 | 03 | 2026-07-09 | warm-pool-measurements | active | - | - |
 | 04 | 2026-07-09 | results-and-recommendations | active | - | - |
+| 05 | 2026-07-10 | k8s-watch-crash-fix | active | - | [#2211](https://github.com/NVIDIA/OpenShell/issues/2211) |
 
 ## Structure
 
@@ -19,6 +20,8 @@ Last updated: 2026-07-09
 - **03** depends on: 02 (cluster must be running)
 - **04** depends on: 03 (measurements must be complete)
 
+05 is a standalone bug fix discovered during the warm pool feasibility study.
+
 ## Open Threads
 
 - Does the Red Hat Agent Sandbox operator tech preview include extension CRDs? (from #01, #02)
@@ -26,6 +29,7 @@ Last updated: 2026-07-09
 - Is KEP-753 (native sidecars) available on the target OpenShift version? (from #01, #02)
 - How does pool exhaustion behave (cold fallback vs. Pending)? (from #03)
 - Should findings be posted to upstream agent-sandbox repo? (from #04)
+- Should the defensive skip use `debug!` or `warn!` level? (from #05)
 
 ## Parked Ideas
 
