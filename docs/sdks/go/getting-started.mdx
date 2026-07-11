@@ -1,5 +1,5 @@
 ---
-# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 title: "Getting Started"
 description: "Install the OpenShell Go SDK, connect to a gateway, and make your first API call."
@@ -50,7 +50,7 @@ func main() {
         log.Fatal(err)
     }
     for _, sb := range sandboxes {
-        fmt.Printf("Sandbox: %s (status: %s)\n", sb.Name, sb.Status)
+        fmt.Printf("Sandbox: %s (phase: %s)\n", sb.Name, sb.Status.Phase)
     }
 }
 ```
@@ -58,10 +58,11 @@ func main() {
 ## Create a Sandbox
 
 ```go
-sandbox, err := client.Sandboxes().Create(ctx, &types.CreateSandboxRequest{
-    Name:   "my-sandbox",
-    Image:  "ubuntu:24.04",
-})
+sandbox, err := client.Sandboxes().Create(ctx, "my-sandbox", &types.SandboxSpec{
+    Template: types.SandboxTemplate{
+        Image: "ubuntu:24.04",
+    },
+}, nil)
 if err != nil {
     log.Fatal(err)
 }
@@ -71,11 +72,11 @@ fmt.Printf("Created sandbox %s\n", sandbox.Name)
 ## Run a Command
 
 ```go
-result, err := client.Exec().Run(ctx, "my-sandbox", "echo hello")
+result, err := client.Exec().Run(ctx, "my-sandbox", []string{"echo", "hello"})
 if err != nil {
     log.Fatal(err)
 }
-fmt.Println(result.Stdout)
+fmt.Println(string(result.Stdout))
 ```
 
 ## Client Options
