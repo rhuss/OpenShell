@@ -58,7 +58,6 @@ func Login(ctx context.Context, gatewayName string, opts ...LoginOption) (*oauth
 		if readErr == nil && tok != nil && tok.Valid() {
 			return tok, nil
 		}
-		// If readErr is a non-NotExist error, we log and proceed.
 		// Stale/expired tokens or missing files are not errors; we
 		// simply proceed to the interactive flow.
 	}

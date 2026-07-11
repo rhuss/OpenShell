@@ -86,6 +86,9 @@ func (c *fakeProviderClient) Create(_ context.Context, provider *types.Provider)
 	if c.closedFunc() {
 		return nil, &types.StatusError{Code: types.ErrorUnavailable, Message: "client is closed"}
 	}
+	if provider == nil {
+		return nil, &types.StatusError{Code: types.ErrorInvalidArgument, Message: "provider must not be nil"}
+	}
 
 	p := copyProvider(provider)
 	p.CreatedAt = time.Now()
@@ -117,6 +120,9 @@ func (c *fakeProviderClient) Update(_ context.Context, provider *types.Provider)
 	if c.closedFunc() {
 		return nil, &types.StatusError{Code: types.ErrorUnavailable, Message: "client is closed"}
 	}
+	if provider == nil {
+		return nil, &types.StatusError{Code: types.ErrorInvalidArgument, Message: "provider must not be nil"}
+	}
 
 	// Fetch existing to preserve CreatedAt and increment ResourceVersion
 	existing, err := c.store.Get(provider.Name)
@@ -144,6 +150,9 @@ func (c *fakeProviderClient) Delete(_ context.Context, name string) error {
 func (c *fakeProviderClient) Ensure(ctx context.Context, provider *types.Provider) (*types.Provider, error) {
 	if c.closedFunc() {
 		return nil, &types.StatusError{Code: types.ErrorUnavailable, Message: "client is closed"}
+	}
+	if provider == nil {
+		return nil, &types.StatusError{Code: types.ErrorInvalidArgument, Message: "provider must not be nil"}
 	}
 
 	_, err := c.store.Get(provider.Name)
