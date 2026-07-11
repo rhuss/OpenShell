@@ -186,6 +186,8 @@ type interactiveSession struct {
 	errOnce   sync.Once
 	err       error
 	buf       []byte
+	exitCode  int
+	hasExit   bool
 }
 
 func newInteractiveSession(stream grpc.BidiStreamingClient[pb.ExecSandboxInput, pb.ExecSandboxEvent]) *interactiveSession {
@@ -290,12 +292,19 @@ func (s *interactiveSession) Resize(cols, rows uint32) error {
 }
 
 func (s *interactiveSession) ExitCode() (int, error) {
+	if s.hasExit {
+		return s.exitCode, nil
+	}
 	select {
 	case code := <-s.exitCh:
+		s.exitCode = code
+		s.hasExit = true
 		return code, nil
 	case <-s.done:
 		select {
 		case code := <-s.exitCh:
+			s.exitCode = code
+			s.hasExit = true
 			return code, nil
 		default:
 			if s.err != nil {

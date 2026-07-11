@@ -486,7 +486,7 @@ func TestConfigUpdate_Error(t *testing.T) {
 	require.Error(t, err)
 	var se *StatusError
 	require.ErrorAs(t, err, &se)
-	assert.Equal(t, ErrorInternal, se.Code)
+	assert.Equal(t, ErrorConflict, se.Code)
 }
 
 func TestConfigUpdate_NilUpdate(t *testing.T) {
