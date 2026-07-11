@@ -242,6 +242,9 @@ func (s *interactiveSession) readLoop() {
 }
 
 func (s *interactiveSession) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
 	if len(s.buf) > 0 {
 		n := copy(p, s.buf)
 		s.buf = s.buf[n:]
