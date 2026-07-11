@@ -1,0 +1,12 @@
+{
+  "mode": "ship",
+  "stage": "specify",
+  "stage_index": 0,
+  "total_stages": 8,
+  "ask": "smart",
+  "started_at": "2026-07-11T09:24:11Z",
+  "retries": 0,
+  "status": "running",
+  "brainstorm_file": "brainstorm/06-warm-pool-grpc-poc.md",
+  "feature_branch": "main"
+}
