@@ -1,0 +1,168 @@
+{
+    "apiVersion": "v1",
+    "items": [
+        {
+            "action": "Binding",
+            "apiVersion": "v1",
+            "eventTime": "2026-07-10T07:02:19.145216Z",
+            "firstTimestamp": null,
+            "involvedObject": {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "name": "vanilla-run-6",
+                "namespace": "openshell",
+                "resourceVersion": "20841",
+                "uid": "2c000ba7-a697-491d-8c19-a8d1611fda74"
+            },
+            "kind": "Event",
+            "lastTimestamp": null,
+            "message": "Successfully assigned openshell/vanilla-run-6 to ip-10-0-5-254.us-east-2.compute.internal",
+            "metadata": {
+                "creationTimestamp": "2026-07-10T07:02:19Z",
+                "name": "vanilla-run-6.18c0dba1815bf123",
+                "namespace": "openshell",
+                "resourceVersion": "20845",
+                "uid": "7e895baf-1ae8-4016-a617-6683e7eb1c97"
+            },
+            "reason": "Scheduled",
+            "reportingComponent": "default-scheduler",
+            "reportingInstance": "default-scheduler-kube-scheduler-5d4d5bf5b-96lll",
+            "source": {},
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-07-10T07:02:19Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "name": "vanilla-run-6",
+                "namespace": "openshell",
+                "resourceVersion": "20848",
+                "uid": "2c000ba7-a697-491d-8c19-a8d1611fda74"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-07-10T07:02:19Z",
+            "message": "Add eth0 [10.130.0.36/23] from ovn-kubernetes",
+            "metadata": {
+                "creationTimestamp": "2026-07-10T07:02:19Z",
+                "name": "vanilla-run-6.18c0dba19af6e869",
+                "namespace": "openshell",
+                "resourceVersion": "20850",
+                "uid": "52b93783-f3d0-4f60-bfef-a3c8f3aa2cd9"
+            },
+            "reason": "AddedInterface",
+            "reportingComponent": "multus",
+            "reportingInstance": "",
+            "source": {
+                "component": "multus"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-07-10T07:02:19Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "fieldPath": "spec.containers{sandbox}",
+                "kind": "Pod",
+                "name": "vanilla-run-6",
+                "namespace": "openshell",
+                "resourceVersion": "20842",
+                "uid": "2c000ba7-a697-491d-8c19-a8d1611fda74"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-07-10T07:02:19Z",
+            "message": "Container image \"registry.k8s.io/pause:3.10\" already present on machine and can be accessed by the pod",
+            "metadata": {
+                "creationTimestamp": "2026-07-10T07:02:19Z",
+                "name": "vanilla-run-6.18c0dba19d3732f2",
+                "namespace": "openshell",
+                "resourceVersion": "20852",
+                "uid": "6df5e44d-0a7f-4f2d-ae58-5d305a0b6e37"
+            },
+            "reason": "Pulled",
+            "reportingComponent": "kubelet",
+            "reportingInstance": "ip-10-0-5-254.us-east-2.compute.internal",
+            "source": {
+                "component": "kubelet",
+                "host": "ip-10-0-5-254.us-east-2.compute.internal"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-07-10T07:02:19Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "fieldPath": "spec.containers{sandbox}",
+                "kind": "Pod",
+                "name": "vanilla-run-6",
+                "namespace": "openshell",
+                "resourceVersion": "20842",
+                "uid": "2c000ba7-a697-491d-8c19-a8d1611fda74"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-07-10T07:02:19Z",
+            "message": "Container created",
+            "metadata": {
+                "creationTimestamp": "2026-07-10T07:02:19Z",
+                "name": "vanilla-run-6.18c0dba19fddb4f3",
+                "namespace": "openshell",
+                "resourceVersion": "20853",
+                "uid": "a341044a-f9d7-4d2a-ae4a-abf9bff3800a"
+            },
+            "reason": "Created",
+            "reportingComponent": "kubelet",
+            "reportingInstance": "ip-10-0-5-254.us-east-2.compute.internal",
+            "source": {
+                "component": "kubelet",
+                "host": "ip-10-0-5-254.us-east-2.compute.internal"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-07-10T07:02:19Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "fieldPath": "spec.containers{sandbox}",
+                "kind": "Pod",
+                "name": "vanilla-run-6",
+                "namespace": "openshell",
+                "resourceVersion": "20842",
+                "uid": "2c000ba7-a697-491d-8c19-a8d1611fda74"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-07-10T07:02:19Z",
+            "message": "Container started",
+            "metadata": {
+                "creationTimestamp": "2026-07-10T07:02:19Z",
+                "name": "vanilla-run-6.18c0dba1a04ee274",
+                "namespace": "openshell",
+                "resourceVersion": "20854",
+                "uid": "a8875032-fbc1-45f8-88e7-905161fbc9f1"
+            },
+            "reason": "Started",
+            "reportingComponent": "kubelet",
+            "reportingInstance": "ip-10-0-5-254.us-east-2.compute.internal",
+            "source": {
+                "component": "kubelet",
+                "host": "ip-10-0-5-254.us-east-2.compute.internal"
+            },
+            "type": "Normal"
+        }
+    ],
+    "kind": "List",
+    "metadata": {
+        "resourceVersion": ""
+    }
+}

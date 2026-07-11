@@ -1,0 +1,98 @@
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxTemplate
+metadata:
+  name: openshell-warm
+spec:
+  envVarsInjectionPolicy: Allowed
+  podTemplate:
+    spec:
+      automountServiceAccountToken: false
+      dnsPolicy: ClusterFirst
+      serviceAccountName: openshell-sandbox
+      securityContext:
+        fsGroup: 1000
+      initContainers:
+      - name: workspace-init
+        image: ghcr.io/nvidia/openshell-community/sandboxes/base:latest
+        command:
+        - sh
+        - -c
+        - |
+          if [ ! -f /workspace-pvc/.workspace-initialized ]; then
+            if [ -d /sandbox ]; then
+              tar -C /sandbox -cf - . | tar -C /workspace-pvc -xpf -
+            fi
+            touch /workspace-pvc/.workspace-initialized
+          fi
+        securityContext:
+          runAsUser: 0
+        volumeMounts:
+        - mountPath: /workspace-pvc
+          name: workspace
+      containers:
+      - name: agent
+        image: ghcr.io/nvidia/openshell-community/sandboxes/base:latest
+        command: ["sleep", "infinity"]
+        env:
+        - name: OPENSHELL_ENDPOINT
+          value: "https://openshell.openshell.svc.cluster.local:8080"
+        - name: OPENSHELL_SANDBOX_COMMAND
+          value: "sleep infinity"
+        - name: OPENSHELL_TELEMETRY_ENABLED
+          value: "true"
+        - name: OPENSHELL_SSH_SOCKET_PATH
+          value: "/run/openshell/ssh.sock"
+        - name: OPENSHELL_TLS_CA
+          value: "/etc/openshell-tls/client/ca.crt"
+        - name: OPENSHELL_TLS_CERT
+          value: "/etc/openshell-tls/client/tls.crt"
+        - name: OPENSHELL_TLS_KEY
+          value: "/etc/openshell-tls/client/tls.key"
+        - name: OPENSHELL_K8S_SA_TOKEN_FILE
+          value: "/var/run/secrets/openshell/token"
+        - name: OPENSHELL_SANDBOX_UID
+          value: "1000"
+        - name: OPENSHELL_SANDBOX_GID
+          value: "1000"
+        securityContext:
+          appArmorProfile:
+            type: Unconfined
+          capabilities:
+            add: ["SYS_ADMIN", "NET_ADMIN", "SYS_PTRACE", "SYSLOG"]
+          runAsUser: 0
+        volumeMounts:
+        - mountPath: /etc/openshell-tls/client
+          name: openshell-client-tls
+          readOnly: true
+        - mountPath: /var/run/secrets/openshell
+          name: openshell-sa-token
+          readOnly: true
+        - mountPath: /opt/openshell/bin
+          name: openshell-supervisor-bin
+          readOnly: true
+        - mountPath: /sandbox
+          name: workspace
+      volumes:
+      - name: openshell-client-tls
+        secret:
+          defaultMode: 256
+          secretName: openshell-client-tls
+      - name: openshell-sa-token
+        projected:
+          defaultMode: 256
+          sources:
+          - serviceAccountToken:
+              audience: openshell-gateway
+              expirationSeconds: 3600
+              path: token
+      - name: openshell-supervisor-bin
+        image:
+          reference: "ghcr.io/nvidia/openshell/supervisor:latest"
+  volumeClaimTemplates:
+  - metadata:
+      name: workspace
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 2Gi

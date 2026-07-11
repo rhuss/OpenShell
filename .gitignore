@@ -229,3 +229,13 @@ scripts/lint-mermaid/node_modules/
 # Nix
 /result
 /result-*
+
+# Warm pool experiment shared libraries (overrides Python lib/ pattern above)
+!experiments/lib/
+
+# spex: generated/local files (only constitution is committed)
+# Use worktree-specific pattern to avoid shadowing root .claude/ tracked files
+.claude/worktrees/*/.claude/
+**/.specify/**
+!**/.specify/memory/
+!**/.specify/memory/constitution.md
