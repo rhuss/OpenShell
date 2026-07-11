@@ -17,14 +17,22 @@ Three components must work together:
 
 ### A: ROSA HCP with Upstream Agent Sandbox Manifests
 
+<<<<<<< HEAD
 Provision ROSA, install agent-sandbox from upstream manifests (both `manifest.yaml` and `extensions.yaml`), deploy OpenShell with the OpenShell OpenShift deploy chart.
+=======
+Provision ROSA, install agent-sandbox from upstream manifests (both `manifest.yaml` and `extensions.yaml`), deploy OpenShell with Krzysztof's chart.
+>>>>>>> origin/main
 
 - Pros: Uses upstream directly, most current version, full control over version
 - Cons: No operator lifecycle management, manual CRD updates, no OperatorHub integration
 
 ### B: ROSA HCP with Red Hat Agent Sandbox Operator (Tech Preview)
 
+<<<<<<< HEAD
 Provision ROSA, install the Red Hat build of Agent Sandbox from OperatorHub, deploy OpenShell with the OpenShell OpenShift deploy chart.
+=======
+Provision ROSA, install the Red Hat build of Agent Sandbox from OperatorHub, deploy OpenShell with Krzysztof's chart.
+>>>>>>> origin/main
 
 - Pros: Operator manages CRD lifecycle, OperatorHub integration, downstream supported path
 - Cons: Tech preview may not include extension CRDs yet, version may lag upstream
@@ -53,7 +61,11 @@ Install the Red Hat operator for the core Sandbox CRD, then layer upstream exten
    - Verify all four CRDs are served: `kubectl api-resources | grep agents`
 
 3. **OpenShell deployment**
+<<<<<<< HEAD
    - Clone github.com/2000krysztof/Openshell-Openshift-Deploy at a pinned commit/tag for reproducibility
+=======
+   - Clone github.com/2000krysztof/Openshell-Openshift-Deploy
+>>>>>>> origin/main
    - Run `deploy.sh` with default configuration
    - Verify: `openshell status` shows Connected
    - Verify: `openshell sandbox create --from base` succeeds (cold-start baseline works)
@@ -74,5 +86,9 @@ Install the Red Hat operator for the core Sandbox CRD, then layer upstream exten
 
 - What OpenShift version does ROSA HCP currently offer that includes K8s 1.33+? Need to check `rosa list versions`.
 - Does the Red Hat Agent Sandbox operator tech preview install from the default OperatorHub catalog, or does it require a custom CatalogSource?
+<<<<<<< HEAD
 - Does the deploy script handle OpenShift 4.20+ or does it need updates for newer SCC/security changes?
+=======
+- Does Krzysztof's deploy script handle OpenShift 4.20+ or does it need updates for newer SCC/security changes?
+>>>>>>> origin/main
 - How much cluster capacity do we need? The warm pool experiments will create 5-20 pre-provisioned pods simultaneously.
