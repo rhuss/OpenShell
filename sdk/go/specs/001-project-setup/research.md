@@ -10,7 +10,7 @@ until org transfer).
 
 ## Go Version
 
-**Decision**: Go 1.23 as minimum version
+**Decision**: Go 1.25 as minimum version
 **Rationale**: Latest stable release with full `log/slog` support, improved
 generic type inference, and range-over-func. Supports the "latest two
 releases" policy (1.23 and 1.24).

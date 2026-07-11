@@ -47,7 +47,7 @@ extraction (just remove the replace directive).
 available. Stub with a TODO if not yet merged. The lazy auth pattern
 catches gRPC Unauthenticated errors and triggers `oidc.Login(gatewayName)`.
 
-**Rationale**: The OIDC package (brainstorm 020) is being developed in
+**Rationale**: The OIDC package (spec 018-oidc-login) is being developed in
 parallel. The example should demonstrate the integration pattern even if
 the package isn't ready. The stub approach keeps the example compilable.
 

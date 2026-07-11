@@ -14,7 +14,7 @@ Go programs connecting to gateways managed by the Rust CLI.
 
 ## Technical Context
 
-**Language/Version**: Go 1.21+ (matches go.mod)
+**Language/Version**: Go 1.25+ (matches go.mod)
 **Primary Dependencies**: stdlib (os, path/filepath, encoding/json, errors), golang.org/x/oauth2 (for OIDC token source)
 **Storage**: Filesystem (read-only, XDG config directories)
 **Testing**: Go testing + testify (assert/require), filesystem-based test fixtures

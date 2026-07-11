@@ -30,7 +30,7 @@ tunnel, err := client.SSH().Tunnel(ctx, "my-sandbox", 22,
 ## TCP Forward with Service ID
 
 ```go
-conn, err := client.TCP().Forward(ctx, sandboxID, 8080,
+conn, err := client.TCP().Forward(ctx, sandboxName, 8080,
     v1.WithForwardServiceID("debug-session-42"))
 ```
 

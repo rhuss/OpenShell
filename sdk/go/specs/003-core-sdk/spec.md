@@ -213,6 +213,6 @@ The following capabilities are explicitly excluded from Phase 1 and deferred to 
 - File transfer uses SSH tunnels internally, but this is an implementation detail hidden from SDK consumers. The public API only exposes Upload and Download with file paths.
 - TLS configuration defaults to auto-discovery. When TLS fields are nil, the SDK attempts to connect with system-default TLS. An explicit Insecure flag is provided for localhost development only.
 - Authentication is pluggable via an AuthProvider interface, but the specific auth implementations (OIDC, mTLS, token-based) are out of scope for Phase 1. Phase 1 ships with a no-auth option and a static-token option.
-- The SDK targets Go 1.23+ as the minimum supported version.
+- The SDK targets Go 1.25+ as the minimum supported version.
 - The module path is `github.com/NVIDIA/OpenShell/sdk/go` and the public API package is `openshell/v1`.
 - Retry policy is opt-in. When RetryPolicy is nil in Config, no retries are attempted. The retry implementation is an internal concern.

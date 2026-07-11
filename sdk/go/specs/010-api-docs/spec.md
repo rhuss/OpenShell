@@ -81,7 +81,7 @@ each code snippet works and the guide is completable in under 5 minutes.
 
 **Acceptance Scenarios**:
 
-1. **Given** a developer with Go 1.23+ installed, **When** they follow the
+1. **Given** a developer with Go 1.25+ installed, **When** they follow the
    getting started guide, **Then** they can connect to a gateway and create
    a sandbox using the provided code snippets.
 2. **Given** the getting started guide, **When** a developer copies a code
