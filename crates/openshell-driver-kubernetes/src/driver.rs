@@ -11,7 +11,8 @@ use crate::config::{
 };
 use futures::{Stream, StreamExt, TryStreamExt};
 use k8s_openapi::api::core::v1::{
-    Event as KubeEventObj, Namespace, Node, PersistentVolumeClaimVolumeSource, Volume, VolumeMount,
+    Event as KubeEventObj, Namespace, Node, PersistentVolumeClaimVolumeSource, Secret, Volume,
+    VolumeMount,
 };
 use kube::api::{Api, ApiResource, DeleteParams, ListParams, PostParams};
 use kube::core::gvk::GroupVersionKind;
@@ -782,6 +783,11 @@ impl KubernetesComputeDriver {
             KubernetesDriverError::InvalidArgument(status.message().to_string())
         })?;
         let name = sandbox.name.as_str();
+
+        if let Some(result) = self.try_warm_pool(sandbox).await {
+            return result;
+        }
+
         info!(
             sandbox_id = %sandbox.id,
             sandbox_name = %name,
@@ -896,6 +902,164 @@ impl KubernetesComputeDriver {
                     "timed out after {}s waiting for Kubernetes API",
                     KUBE_API_TIMEOUT.as_secs()
                 )))
+            }
+        }
+    }
+
+    async fn read_activation_tls(&self) -> Option<crate::activation_client::TlsConfig> {
+        if self.config.client_tls_secret_name.is_empty() {
+            return None;
+        }
+        let secrets: Api<Secret> = Api::namespaced(self.client.clone(), &self.config.namespace);
+        match secrets.get(&self.config.client_tls_secret_name).await {
+            Ok(secret) => {
+                let tls = secret.data.as_ref().and_then(|d| {
+                    Some(crate::activation_client::TlsConfig {
+                        ca_cert: d.get("ca.crt")?.0.clone(),
+                        client_cert: d.get("tls.crt")?.0.clone(),
+                        client_key: d.get("tls.key")?.0.clone(),
+                    })
+                });
+                if tls.is_none() {
+                    warn!(
+                        secret = %self.config.client_tls_secret_name,
+                        "TLS secret missing required fields (ca.crt, tls.crt, tls.key), \
+                         falling back to plain channel"
+                    );
+                }
+                tls
+            }
+            Err(e) => {
+                warn!(
+                    secret = %self.config.client_tls_secret_name,
+                    error = %e,
+                    "Failed to read TLS secret for activation mTLS, falling back to plain channel"
+                );
+                None
+            }
+        }
+    }
+
+    async fn try_warm_pool(&self, sandbox: &Sandbox) -> Option<Result<(), KubernetesDriverError>> {
+        let image = sandbox
+            .spec
+            .as_ref()
+            .and_then(|spec| spec.template.as_ref())
+            .map_or(self.config.default_image.as_str(), |t| {
+                if t.image.is_empty() {
+                    self.config.default_image.as_str()
+                } else {
+                    t.image.as_str()
+                }
+            });
+
+        if image.is_empty() {
+            return None;
+        }
+
+        let pools =
+            match crate::warm_pool::list_warm_pools(&self.client, &self.config.namespace).await {
+                Ok(pools) => pools,
+                Err(e) => {
+                    debug!(error = %e, "Failed to list warm pools, falling back to cold start");
+                    return None;
+                }
+            };
+
+        let Some(pool) = crate::warm_pool::find_matching_pool(&pools, image) else {
+            debug!(image = %image, "No warm pool found for image");
+            return None;
+        };
+
+        let pool_name = pool.metadata.name.as_deref().unwrap_or("unknown");
+
+        info!(
+            sandbox_id = %sandbox.id,
+            pool = %pool_name,
+            image = %image,
+            "Warm pool match found, attempting claim"
+        );
+
+        let claim_name = match crate::warm_pool::create_claim(
+            &self.client,
+            &self.config.namespace,
+            pool_name,
+            &sandbox.id,
+        )
+        .await
+        {
+            Ok(name) => name,
+            Err(e) => {
+                warn!(
+                    sandbox_id = %sandbox.id,
+                    error = %e,
+                    "Failed to create warm pool claim, falling back to cold start"
+                );
+                return None;
+            }
+        };
+
+        let pod_ip = match crate::warm_pool::wait_for_claim_ready(
+            &self.client,
+            &self.config.namespace,
+            &claim_name,
+            Duration::from_secs(10),
+        )
+        .await
+        {
+            Ok(ip) => ip,
+            Err(e) => {
+                warn!(
+                    sandbox_id = %sandbox.id,
+                    claim = %claim_name,
+                    error = %e,
+                    "Warm pool claim failed, falling back to cold start"
+                );
+                return None;
+            }
+        };
+
+        let tls = self.read_activation_tls().await;
+
+        let sandbox_token = sandbox
+            .spec
+            .as_ref()
+            .map(|s| s.sandbox_token.clone())
+            .unwrap_or_default();
+
+        let request = openshell_core::proto::supervisor::v1::ActivateSandboxRequest {
+            sandbox_id: sandbox.id.clone(),
+            sandbox_name: sandbox.name.clone(),
+            sandbox_token,
+            gateway_endpoint: self.config.grpc_endpoint.clone(),
+            policy: Some(openshell_core::proto::sandbox::v1::SandboxPolicy::default()),
+        };
+
+        match crate::activation_client::activate_sandbox(&pod_ip, request, tls.as_ref()).await {
+            Ok(resp) if resp.success => {
+                info!(
+                    sandbox_id = %sandbox.id,
+                    pod_ip = %pod_ip,
+                    "Warm pool activation succeeded"
+                );
+                Some(Ok(()))
+            }
+            Ok(resp) => {
+                warn!(
+                    sandbox_id = %sandbox.id,
+                    error_message = %resp.error_message,
+                    error_code = resp.error_code,
+                    "Warm pool activation returned failure, falling back to cold start"
+                );
+                None
+            }
+            Err(e) => {
+                warn!(
+                    sandbox_id = %sandbox.id,
+                    error = %e,
+                    "Warm pool activation error, falling back to cold start"
+                );
+                None
             }
         }
     }

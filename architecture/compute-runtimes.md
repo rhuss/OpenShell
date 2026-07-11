@@ -127,6 +127,54 @@ already unprivileged. Sidecar pods use a shared process namespace so the
 network sidecar can resolve workload process and binary identity through
 `/proc/<entrypoint-pid>`.
 
+## Warm Pool (Kubernetes)
+
+The Kubernetes driver supports an optional warm pool fast path that claims
+a pre-provisioned pod instead of creating a new Sandbox CRD. When a warm
+pool is available, sandbox creation skips image pull and pod scheduling
+entirely.
+
+On every `create_sandbox` call the driver runs `try_warm_pool()` before
+the cold-start path. The sequence is:
+
+1. **Pool discovery.** List `SandboxWarmPool` CRDs
+   (`agents.x-k8s.io/v1alpha1`) in the driver namespace. Match by exact
+   container image and `status.readyReplicas > 0`.
+2. **Claim.** Create a `SandboxClaim` CRD referencing the matched pool
+   name and sandbox ID. Poll the claim until `status.phase` reaches
+   `Ready` (10-second timeout, 200 ms poll interval). Extract the
+   assigned pod IP from `status.sandbox.podIP`.
+3. **Activation.** Connect to the supervisor gRPC endpoint at
+   `pod_ip:9090` and call `ActivateSandbox`
+   (`openshell.supervisor.v1.Supervisor`). The request carries the
+   sandbox ID, name, gateway-minted token, gateway endpoint, and sandbox
+   policy. The supervisor compiles OPA rules, connects back to the
+   gateway, and starts the entrypoint. A 5-second timeout wraps the
+   activation RPC.
+4. **Result.** If the activation response has `success = true`, the
+   driver returns immediately and the cold-start path is skipped. Any
+   failure at any step (no matching pool, claim timeout, activation
+   error, non-success response) returns `None` from `try_warm_pool()`
+   and the driver falls through to the normal Sandbox CRD creation.
+
+The warm pool path is implemented in two modules inside
+`crates/openshell-driver-kubernetes/`:
+
+- `warm_pool.rs` handles SandboxWarmPool listing, image matching, claim
+  creation, and claim polling.
+- `activation_client.rs` provides the gRPC client for the supervisor
+  `ActivateSandbox` RPC.
+
+The supervisor-side `ActivateSandbox` service is defined in
+`proto/supervisor.proto`. The supervisor hosts this service (port 9090)
+while waiting in an unactivated warm pool state. Once activated, the
+supervisor transitions to its normal gateway-connected lifecycle.
+
+Fallback is silent: warm pool failures produce `debug!` or `warn!` log
+lines but do not propagate errors to the caller. The combined claim and
+activation timeouts (10 s + 5 s) bound the worst-case delay before
+cold-start fallback begins.
+
 ## Images
 
 The gateway image and Helm chart are built from this repository. Sandbox images

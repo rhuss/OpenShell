@@ -5,10 +5,12 @@
 //!
 //! This crate provides process sandboxing and monitoring capabilities.
 
+pub mod activation;
 mod activity_aggregator;
 mod denial_aggregator;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod google_cloud_metadata;
+pub mod health;
 mod mechanistic_mapper;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod metadata_server;
@@ -766,6 +768,188 @@ async fn wait_for_shutdown_signal() {
         let _ = tokio::signal::ctrl_c().await;
         info!("Received Ctrl-C, shutting down network-only supervisor");
     }
+}
+
+#[derive(Debug)]
+pub enum BootstrapError {
+    PolicyCompilation(String),
+    GatewayUnreachable(String),
+    TokenInvalid(String),
+    Internal(String),
+}
+
+impl std::fmt::Display for BootstrapError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PolicyCompilation(msg) => write!(f, "policy compilation failed: {msg}"),
+            Self::GatewayUnreachable(msg) => write!(f, "gateway unreachable: {msg}"),
+            Self::TokenInvalid(msg) => write!(f, "token invalid: {msg}"),
+            Self::Internal(msg) => write!(f, "internal error: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for BootstrapError {}
+
+pub async fn bootstrap_sandbox(
+    sandbox_id: &str,
+    sandbox_name: &str,
+    token: String,
+    gateway_endpoint: &str,
+    policy: openshell_core::proto::sandbox::v1::SandboxPolicy,
+) -> std::result::Result<(), BootstrapError> {
+    info!(
+        sandbox_id = %sandbox_id,
+        sandbox_name = %sandbox_name,
+        gateway = %gateway_endpoint,
+        "Starting warm pool bootstrap"
+    );
+
+    // Step 1: Install JWT and connect to gateway
+    let _channel = openshell_core::grpc_client::connect_with_direct_token(gateway_endpoint, &token)
+        .await
+        .map_err(|e| BootstrapError::GatewayUnreachable(e.to_string()))?;
+
+    info!("Gateway channel established with direct JWT");
+
+    // Step 2: Compile OPA policies from the provided config
+    let _opa_engine = OpaEngine::from_proto(&policy)
+        .map(Arc::new)
+        .map_err(|e| BootstrapError::PolicyCompilation(e.to_string()))?;
+
+    info!("OPA policies compiled");
+
+    // Step 3: Fetch sandbox config (GetSandboxConfig)
+    match openshell_core::grpc_client::fetch_settings_snapshot(gateway_endpoint, sandbox_id).await {
+        Ok(snapshot) => {
+            info!(
+                version = snapshot.version,
+                "Fetched sandbox settings snapshot"
+            );
+        }
+        Err(e) => {
+            warn!(error = %e, "Failed to fetch sandbox settings, continuing with provided policy");
+        }
+    }
+
+    // Step 4: Fetch provider environment
+    match openshell_core::grpc_client::fetch_provider_environment(gateway_endpoint, sandbox_id)
+        .await
+    {
+        Ok(result) => {
+            info!(
+                env_count = result.environment.len(),
+                "Fetched provider environment"
+            );
+        }
+        Err(e) => {
+            warn!(error = %e, "Failed to fetch provider environment, continuing without");
+        }
+    }
+
+    // Step 5: Spawn ConnectSupervisor session to register with the gateway
+    let ssh_socket_path = std::env::var(openshell_core::sandbox_env::SSH_SOCKET_PATH)
+        .unwrap_or_else(|_| "/tmp/openshell-ssh.sock".to_string());
+    openshell_supervisor_process::supervisor_session::spawn(
+        gateway_endpoint.to_string(),
+        sandbox_id.to_string(),
+        std::path::PathBuf::from(ssh_socket_path),
+        None,
+        None,
+    );
+
+    info!(sandbox_id = %sandbox_id, "Warm pool bootstrap complete");
+    Ok(())
+}
+
+const DEFAULT_ACTIVATION_GRPC_PORT: u16 = 9090;
+
+fn activation_grpc_port() -> u16 {
+    std::env::var("OPENSHELL_ACTIVATION_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_ACTIVATION_GRPC_PORT)
+}
+
+pub async fn run_unidentified(
+    health_check: bool,
+    health_port: u16,
+    ocsf_enabled: Arc<std::sync::atomic::AtomicBool>,
+) -> Result<i32> {
+    use activation::SupervisorService;
+    use health::HealthServer;
+    use openshell_core::proto::supervisor::v1::supervisor_server::SupervisorServer;
+
+    let hostname = std::fs::read_to_string("/etc/hostname").map_or_else(
+        |_| "openshell-sandbox".to_string(),
+        |h| h.trim().to_string(),
+    );
+    openshell_ocsf::ctx::set_ctx(SandboxContext {
+        sandbox_id: String::new(),
+        sandbox_name: String::new(),
+        container_image: std::env::var("OPENSHELL_CONTAINER_IMAGE").unwrap_or_default(),
+        hostname,
+        product_version: openshell_core::VERSION.to_string(),
+        proxy_ip: std::net::IpAddr::from([127, 0, 0, 1]),
+        proxy_port: 0,
+    });
+
+    let _ = ocsf_enabled;
+
+    ocsf_emit!(
+        AppLifecycleBuilder::new(ocsf_ctx())
+            .activity(ActivityId::Reset)
+            .severity(SeverityId::Informational)
+            .status(StatusId::Success)
+            .message("Supervisor started in unidentified mode")
+            .build()
+    );
+
+    let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    if health_check {
+        let health_server = HealthServer::new(ready.clone());
+        tokio::spawn(async move {
+            if let Err(e) = health_server.serve(health_port).await {
+                warn!(error = %e, "Health server failed");
+            }
+        });
+    }
+
+    let (activation_tx, activation_rx) = tokio::sync::oneshot::channel();
+    let service = SupervisorService::new(activation_tx);
+
+    let grpc_port = activation_grpc_port();
+    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], grpc_port));
+    info!(
+        port = grpc_port,
+        "Starting gRPC activation server in unidentified mode"
+    );
+
+    let server = tonic::transport::Server::builder()
+        .add_service(SupervisorServer::new(service))
+        .serve(addr);
+
+    if health_check {
+        ready.store(true, std::sync::atomic::Ordering::Release);
+        info!(port = health_port, "Health endpoint /readyz is ready");
+    }
+
+    tokio::select! {
+        result = server => {
+            if let Err(e) = result {
+                warn!(error = %e, "gRPC server error");
+            }
+        }
+        Ok(sandbox_id) = activation_rx => {
+            info!(
+                sandbox_id = %sandbox_id,
+                "Activation complete, supervisor transitioned to active mode"
+            );
+        }
+    }
+
+    Ok(0)
 }
 
 fn sidecar_network_enforcement_enabled() -> bool {

@@ -321,6 +321,34 @@ pub async fn connect_channel_pub(endpoint: &str) -> Result<AuthedChannel> {
     connect_channel(endpoint).await
 }
 
+/// Install a pre-minted JWT and build an authenticated gateway channel.
+///
+/// Used by the warm pool activation path where the gateway passes a JWT
+/// directly in the `ActivateSandbox` request. This bypasses the normal
+/// three-step token acquisition (env / file / K8s SA exchange).
+pub async fn connect_with_direct_token(endpoint: &str, token: &str) -> Result<AuthedChannel> {
+    let slot = install_token_slot(token)?;
+    let _ = TOKEN_REFRESH_MODE.set(RefreshMode::GatewayJwt(TokenSource::Env));
+    let channel = build_plain_channel(endpoint).await?;
+    let plain_channel = channel.clone();
+    let intercepted = InterceptedService::new(channel, AuthInterceptor::new(slot.clone()));
+    if REFRESH_SPAWNED.set(()).is_ok() {
+        let refresh_channel = intercepted.clone();
+        let endpoint = endpoint.to_string();
+        tokio::spawn(async move {
+            refresh_token_loop(
+                refresh_channel,
+                slot,
+                TokenSource::Env,
+                endpoint,
+                plain_channel,
+            )
+            .await;
+        });
+    }
+    Ok(intercepted)
+}
+
 /// Background task that renews the sandbox JWT at ~80% of its remaining
 /// lifetime. The new token replaces the value in [`TOKEN_SLOT`], so all
 /// in-flight and future clients pick it up on their next request. The

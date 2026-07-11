@@ -15,7 +15,9 @@
 - Sandbox SSH server: `crates/openshell-sandbox/src/ssh.rs`
 - Providers: `crates/openshell-providers/src/providers/` (per-provider modules)
 - Bootstrap: `crates/openshell-bootstrap/src/lib.rs` (cluster lifecycle)
-- Proto files: `proto/` directory (openshell.proto, sandbox.proto, datamodel.proto, inference.proto)
+- Warm pool activation: `crates/openshell-sandbox/src/activation.rs` (SupervisorService gRPC handler)
+- Health server: `crates/openshell-sandbox/src/health.rs` (HTTP /readyz endpoint)
+- Proto files: `proto/` directory (openshell.proto, sandbox.proto, datamodel.proto, inference.proto, supervisor.proto)
 
 ## Architecture Docs
 - Files renamed from numbered prefix format to descriptive names (e.g., `2 - server-architecture.md` -> `gateway-architecture.md`)

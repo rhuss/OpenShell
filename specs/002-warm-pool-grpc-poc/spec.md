@@ -75,22 +75,32 @@ When the ActivateSandbox call fails (supervisor crash, OPA compilation error, ga
 - What happens when the gateway cannot reach the supervisor's gRPC port (network policy, pod not ready)? The ActivateSandbox call will timeout, triggering the cold-start fallback.
 - What happens when the supervisor receives an ActivateSandbox call with an invalid or expired JWT? The supervisor should return an error in the ActivateSandbox response, and the gateway should fall back to cold start.
 
+## Clarifications
+
+### Session 2026-07-11
+
+- Q: What timeout should the gateway use for the ActivateSandbox gRPC call before falling back to cold start? → A: 5 seconds (generous for OPA compilation + gateway registration, well under cold-start time of ~16.7s)
+- Q: Should warm pool claim/activation events be logged via OCSF structured logging? → A: Yes, activation success and failure are observable sandbox behavior and should use OCSF events (AppLifecycleBuilder for activation, DetectionFindingBuilder for failures)
+- Q: How does the gateway match a sandbox create request to a SandboxWarmPool? → A: Exact container image match for this PoC. Label-based or selector-based matching deferred to Milestone 2.
+
 ## Requirements *(mandatory)*
 
 ### Functional Requirements
 
 - **FR-001**: Supervisor MUST support an unidentified startup mode where it starts without gateway connection, identity, or OPA policies.
-- **FR-002**: Supervisor in unidentified mode MUST listen on a gRPC port and expose a `/readyz` endpoint that returns 200 when the supervisor is ready to receive activation.
+- **FR-002**: Supervisor in unidentified mode MUST listen on a gRPC port and expose a `/readyz` HTTP endpoint (reusing the existing `--health-check` infrastructure) that returns 200 when the supervisor is ready to receive activation.
 - **FR-003**: Supervisor MUST implement an ActivateSandbox gRPC endpoint that accepts sandbox ID, name, JWT, policy configuration, and gateway endpoint.
-- **FR-004**: Upon receiving ActivateSandbox, the supervisor MUST store the identity, compile OPA policies from the provided config, call IssueSandboxToken and GetSandboxConfig against the gateway, and call ConnectSupervisor to register the session.
+- **FR-004**: Upon receiving ActivateSandbox, the supervisor MUST store the identity, compile OPA policies from the provided config, use the gateway-minted JWT directly (skipping IssueSandboxToken, since the gateway already minted the token and passes it in the request), call GetSandboxConfig against the gateway, and call ConnectSupervisor to register the session.
 - **FR-005**: The ActivateSandbox endpoint MUST return a success or failure response with error details to the caller.
 - **FR-006**: The gateway's Kubernetes driver MUST detect when a SandboxWarmPool with ready replicas exists for the requested image and use the warm pool claim path instead of cold start.
 - **FR-007**: After a SandboxClaim reports Ready with a pod IP, the gateway MUST read the pod IP from the claim status and call ActivateSandbox on the supervisor.
 - **FR-008**: The gateway MUST use existing namespace mTLS certificates for the ActivateSandbox channel.
 - **FR-009**: When no warm pool exists for the requested image, or readyReplicas is 0, the gateway MUST fall back to the existing cold-start path.
-- **FR-010**: When ActivateSandbox fails, the gateway MUST fall back to cold start rather than returning an error to the user.
-- **FR-011**: A new ActivateSandbox RPC MUST be defined in the supervisor service proto, with request fields for sandbox ID, name, JWT, policy config, and gateway endpoint, and response fields for success/failure and error details.
-- **FR-012**: The unidentified supervisor mode MUST be selectable via a CLI flag or environment variable on the supervisor binary.
+- **FR-010**: When ActivateSandbox fails or does not respond within 5 seconds, the gateway MUST fall back to cold start rather than returning an error to the user.
+- **FR-011**: A new `Supervisor` gRPC service MUST be defined (in a new `supervisor.proto` or in `sandbox.proto`) with an `ActivateSandbox` RPC. The request MUST carry sandbox ID, name, JWT, policy config, and gateway endpoint. The response MUST carry success/failure and error details. This is a new service because the supervisor acts as gRPC server here (the reverse of the existing `OpenShell` service where the supervisor is a client).
+- **FR-012**: The unidentified supervisor mode MUST be selectable via both a CLI flag (`--unidentified`) and an environment variable (`OPENSHELL_UNIDENTIFIED`) on the supervisor binary.
+- **FR-013**: The gateway MUST log warm pool activation events (claim, activation success, activation failure, fallback to cold start) using OCSF structured logging.
+- **FR-014**: The gateway MUST match sandbox create requests to SandboxWarmPools by exact container image match.
 
 ### Key Entities
 
@@ -114,11 +124,20 @@ When the ActivateSandbox call fails (supervisor crash, OPA compilation error, ga
 
 - The SandboxWarmPool, SandboxClaim, and SandboxTemplate CRDs already exist in the cluster (created by the warm pool operator from the feasibility study).
 - Warm pool creation and lifecycle management are manual for this PoC (kubectl-based). Automated pool management is deferred to Milestone 2.
-- The existing namespace mTLS certificates are available and sufficient for the gateway-to-supervisor gRPC channel.
+- The existing namespace mTLS certificates are available and sufficient for the gateway-to-supervisor gRPC channel. Warm pool pods run in the same namespace where these certificates are provisioned.
 - The supervisor binary already supports gRPC serving infrastructure that can be extended with the new ActivateSandbox endpoint.
 - OPA policy compilation at claim time adds approximately 100-200ms, which is acceptable within the sub-2s target.
 - The gateway already has access to SandboxClaim status fields including pod IP.
 - Issue #1955 (legacy RPC cleanup) will not conflict with adding the new ActivateSandbox RPC, though coordination with that work is recommended.
 - The supervisor will not implement an activation timeout for this PoC (resource cleanup of unclaimed pods is deferred to Milestone 2).
-- The ActivateSandbox RPC will be added to the existing supervisor service rather than creating a new service, keeping the proto surface minimal.
+- The ActivateSandbox RPC requires a new `Supervisor` gRPC service definition because the supervisor acts as the gRPC server (the reverse of the `OpenShell` service where the supervisor is a client calling `ConnectSupervisor`, `IssueSandboxToken`, etc.).
 - The gateway endpoint is passed in the ActivateSandbox request (not via env var at pool provisioning time), since warm pods are unidentified and should not have gateway-specific configuration baked in.
+
+## Out of Scope
+
+- Automated warm pool lifecycle management (auto-scaling, pod replacement after claim). Deferred to Milestone 2.
+- Label-based or selector-based image matching for SandboxWarmPool. This PoC uses exact container image match only (FR-014).
+- Two-tier OPA pre-compilation (global policies at pool time, sandbox-specific at claim time). Deferred pending latency analysis.
+- Activation timeout and resource cleanup of unclaimed pods. Deferred to Milestone 2.
+- Multi-gateway warm pool coordination beyond SandboxClaim's exclusive binding mechanism.
+- Warm pool observability dashboards or metrics beyond OCSF event logging (FR-013).
