@@ -108,7 +108,7 @@ func (e *execClient) Interactive(ctx context.Context, sandboxName string, comman
 		return nil, converter.FromGRPCError(sendErr)
 	}
 
-	return newInteractiveSession(stream), nil
+	return newInteractiveSession(ctx, stream), nil
 }
 
 // execStream wraps a server-streaming RPC into the ExecStream interface.
@@ -190,8 +190,8 @@ type interactiveSession struct {
 	hasExit   bool
 }
 
-func newInteractiveSession(stream grpc.BidiStreamingClient[pb.ExecSandboxInput, pb.ExecSandboxEvent]) *interactiveSession {
-	ctx, cancel := context.WithCancel(context.Background())
+func newInteractiveSession(parentCtx context.Context, stream grpc.BidiStreamingClient[pb.ExecSandboxInput, pb.ExecSandboxEvent]) *interactiveSession {
+	ctx, cancel := context.WithCancel(parentCtx)
 	s := &interactiveSession{
 		stream:    stream,
 		dataCh:    make(chan []byte, 64),
