@@ -29,7 +29,7 @@ Last updated: 2026-07-10
 - Is KEP-753 (native sidecars) available on the target OpenShift version? (from #01, #02)
 - How does pool exhaustion behave (cold fallback vs. Pending)? (from #03)
 - Should findings be posted to upstream agent-sandbox repo? (from #04)
-- Should the defensive skip use `debug!` or `warn!` level? (from #05)
+- ~~Should the defensive skip use `debug!` or `warn!` level? (from #05)~~ Resolved: `debug!` used in implementation
 
 ## Parked Ideas
 
