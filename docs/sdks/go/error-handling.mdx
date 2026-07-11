@@ -32,13 +32,16 @@ The SDK defines error codes that map to gRPC status codes:
 
 | SDK Error Code | gRPC Status | Meaning |
 |----------------|-------------|---------|
-| `NotFound` | `NOT_FOUND` | Resource does not exist |
-| `AlreadyExists` | `ALREADY_EXISTS` | Resource name conflict |
-| `InvalidArgument` | `INVALID_ARGUMENT` | Bad request parameters |
-| `PermissionDenied` | `PERMISSION_DENIED` | Insufficient credentials |
-| `Unauthenticated` | `UNAUTHENTICATED` | Missing or expired token |
-| `Unavailable` | `UNAVAILABLE` | Gateway is unreachable |
-| `Internal` | `INTERNAL` | Server-side failure |
+| `ErrorNotFound` | `NOT_FOUND` | Resource does not exist |
+| `ErrorAlreadyExists` | `ALREADY_EXISTS` | Resource name conflict |
+| `ErrorInvalidArgument` | `INVALID_ARGUMENT` | Bad request parameters |
+| `ErrorPermissionDenied` | `PERMISSION_DENIED` | Insufficient credentials |
+| `ErrorUnavailable` | `UNAVAILABLE` | Gateway is unreachable |
+| `ErrorDeadlineExceeded` | `DEADLINE_EXCEEDED` | Request timed out |
+| `ErrorCancelled` | `CANCELLED` | Request was cancelled |
+| `ErrorInternal` | `INTERNAL` | Server-side failure |
+| `ErrorUnimplemented` | `UNIMPLEMENTED` | Operation not supported |
+| `ErrorConflict` | `ABORTED` / `FAILED_PRECONDITION` | Conflicting operation |
 
 ## Checking Error Types
 
@@ -49,9 +52,9 @@ if err != nil {
     var se *types.StatusError
     if errors.As(err, &se) {
         switch se.Code {
-        case types.NotFound:
+        case types.ErrorNotFound:
             // Handle missing resource
-        case types.Unavailable:
+        case types.ErrorUnavailable:
             // Retry or fail over
         default:
             // Log and return
@@ -68,7 +71,7 @@ Configure automatic retries for transient failures:
 client, err := gateway.NewClient("my-gateway",
     gateway.WithRetryPolicy(&types.RetryPolicy{
         MaxRetries: 3,
-        Backoff:    100 * time.Millisecond,
+        InitialWait: 100 * time.Millisecond,
     }),
 )
 ```

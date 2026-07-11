@@ -72,8 +72,8 @@ Control TLS settings when connecting to gateways:
 ```go
 client, err := gateway.NewClient("my-gateway",
     gateway.WithTLS(&types.TLSConfig{
-        InsecureSkipVerify: false,
-        CACertFile:         "/path/to/ca.crt",
+        Insecure: false,
+        CAFile:   "/path/to/ca.crt",
     }),
 )
 ```

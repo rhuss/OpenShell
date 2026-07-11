@@ -16,7 +16,7 @@ configuration.
 go get github.com/NVIDIA/OpenShell/sdk/go@latest
 ```
 
-Requires Go 1.25 or later.
+Requires Go 1.24 or later.
 
 ## Connect to a Gateway
 
@@ -89,7 +89,7 @@ client, err := gateway.NewClient("my-gateway",
     gateway.WithLogger(myLogger),
     gateway.WithRetryPolicy(&types.RetryPolicy{
         MaxRetries: 3,
-        Backoff:    100 * time.Millisecond,
+        InitialWait: 100 * time.Millisecond,
     }),
 )
 ```
