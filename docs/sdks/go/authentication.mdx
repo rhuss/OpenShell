@@ -1,5 +1,5 @@
 ---
-# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 title: "Authentication"
 description: "OIDC authentication, token refresh, and gateway auth configuration for the Go SDK."
@@ -29,18 +29,17 @@ client, err := gateway.NewClient("my-gateway")
 ```
 
 The CLI stores OIDC tokens after `openshell gateway auth`. The SDK reads
-these tokens and refreshes them transparently.
+these tokens from disk and wraps them with `RefreshableToken` for
+automatic re-reading when the token file is updated.
 
-## OIDC Token Refresh
+## Token Refresh
 
-For OIDC-authenticated gateways, the SDK handles token refresh
-automatically. You can customize the refresh behavior:
+You can wrap any auth provider with `NewTokenRefresher` to add
+token-expiry-aware refresh logic with configurable leeway:
 
 ```go
-import "github.com/NVIDIA/OpenShell/sdk/go/openshell/v1/oidc"
+import v1 "github.com/NVIDIA/OpenShell/sdk/go/openshell/v1"
 
-// The refresh wrapper handles token renewal before expiry.
-// Configure leeway to refresh tokens before they expire.
 refresher := v1.NewTokenRefresher(baseAuth,
     v1.WithLeeway(30 * time.Second),
     v1.WithLogger(myLogger),
@@ -59,7 +58,7 @@ or use the built-in providers:
 ```go
 // Static API key
 client, err := gateway.NewClient("my-gateway",
-    gateway.WithAuth(types.StaticToken("my-api-key")),
+    gateway.WithAuth(v1.StaticToken("my-api-key")),
 )
 ```
 
