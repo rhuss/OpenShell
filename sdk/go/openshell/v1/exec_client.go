@@ -176,22 +176,27 @@ func (s *execStream) Close() error {
 // A background goroutine owns the Recv loop and routes events to dataCh (for Read)
 // and exitCh (for ExitCode), preventing concurrent Recv calls on the stream.
 type interactiveSession struct {
-	stream  grpc.BidiStreamingClient[pb.ExecSandboxInput, pb.ExecSandboxEvent]
-	sendMu  sync.Mutex
-	dataCh  chan []byte
-	exitCh  chan int
-	done    chan struct{}
-	errOnce sync.Once
-	err     error
-	buf     []byte
+	stream    grpc.BidiStreamingClient[pb.ExecSandboxInput, pb.ExecSandboxEvent]
+	sendMu    sync.Mutex
+	dataCh    chan []byte
+	exitCh    chan int
+	done      chan struct{}
+	cancel    context.CancelFunc
+	streamCtx context.Context
+	errOnce   sync.Once
+	err       error
+	buf       []byte
 }
 
 func newInteractiveSession(stream grpc.BidiStreamingClient[pb.ExecSandboxInput, pb.ExecSandboxEvent]) *interactiveSession {
+	ctx, cancel := context.WithCancel(context.Background())
 	s := &interactiveSession{
-		stream: stream,
-		dataCh: make(chan []byte, 64),
-		exitCh: make(chan int, 1),
-		done:   make(chan struct{}),
+		stream:    stream,
+		dataCh:    make(chan []byte, 64),
+		exitCh:    make(chan int, 1),
+		done:      make(chan struct{}),
+		cancel:    cancel,
+		streamCtx: ctx,
 	}
 	go s.readLoop()
 	return s
@@ -228,7 +233,7 @@ func (s *interactiveSession) readLoop() {
 		}
 		select {
 		case s.dataCh <- chunk.Data:
-		case <-s.done:
+		case <-s.streamCtx.Done():
 			return
 		}
 	}
@@ -302,5 +307,6 @@ func (s *interactiveSession) ExitCode() (int, error) {
 }
 
 func (s *interactiveSession) Close() error {
+	s.cancel()
 	return s.stream.CloseSend()
 }
