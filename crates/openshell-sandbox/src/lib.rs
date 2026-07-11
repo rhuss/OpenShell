@@ -812,25 +812,40 @@ pub async fn bootstrap_sandbox(
 
     info!("Gateway channel established with direct JWT");
 
-    // Step 2: Compile OPA policies from the provided config
-    let _opa_engine = OpaEngine::from_proto(&policy)
-        .map(Arc::new)
-        .map_err(|e| BootstrapError::PolicyCompilation(e.to_string()))?;
-
-    info!("OPA policies compiled");
-
-    // Step 3: Fetch sandbox config (GetSandboxConfig)
-    match openshell_core::grpc_client::fetch_settings_snapshot(gateway_endpoint, sandbox_id).await {
+    // Step 2: Fetch sandbox config to get the real policy
+    // The activation request may carry a placeholder policy; the authoritative
+    // policy comes from the gateway via GetSandboxConfig.
+    let opa_engine = match openshell_core::grpc_client::fetch_settings_snapshot(
+        gateway_endpoint,
+        sandbox_id,
+    )
+    .await
+    {
         Ok(snapshot) => {
             info!(
                 version = snapshot.version,
                 "Fetched sandbox settings snapshot"
             );
+            if let Some(ref fetched_policy) = snapshot.policy {
+                OpaEngine::from_proto(fetched_policy)
+                    .map(Arc::new)
+                    .map_err(|e| BootstrapError::PolicyCompilation(e.to_string()))?
+            } else {
+                OpaEngine::from_proto(&policy)
+                    .map(Arc::new)
+                    .map_err(|e| BootstrapError::PolicyCompilation(e.to_string()))?
+            }
         }
         Err(e) => {
-            warn!(error = %e, "Failed to fetch sandbox settings, continuing with provided policy");
+            warn!(error = %e, "Failed to fetch sandbox settings, compiling from activation request policy");
+            OpaEngine::from_proto(&policy)
+                .map(Arc::new)
+                .map_err(|e| BootstrapError::PolicyCompilation(e.to_string()))?
         }
-    }
+    };
+    let _opa_engine = opa_engine;
+
+    info!("OPA policies compiled");
 
     // Step 4: Fetch provider environment
     match openshell_core::grpc_client::fetch_provider_environment(gateway_endpoint, sandbox_id)

@@ -33,8 +33,12 @@ pub async fn activate_sandbox(
     request: ActivateSandboxRequest,
     tls: Option<&TlsConfig>,
 ) -> Result<ActivateSandboxResponse, ActivationError> {
-    let scheme = if tls.is_some() { "https" } else { "http" };
-    let endpoint_uri = format!("{scheme}://{pod_ip}:{ACTIVATION_PORT}");
+    let tls = tls.ok_or_else(|| {
+        ActivationError::ConnectionFailed(
+            "TLS configuration required for ActivateSandbox but not available".into(),
+        )
+    })?;
+    let endpoint_uri = format!("https://{pod_ip}:{ACTIVATION_PORT}");
 
     info!(endpoint = %endpoint_uri, sandbox_id = %request.sandbox_id, "Connecting to supervisor for activation");
 
@@ -42,14 +46,12 @@ pub async fn activate_sandbox(
         .map_err(|e| ActivationError::ConnectionFailed(e.to_string()))?
         .connect_timeout(Duration::from_secs(2));
 
-    if let Some(tls) = tls {
-        let tls_config = ClientTlsConfig::new()
-            .ca_certificate(Certificate::from_pem(&tls.ca_cert))
-            .identity(Identity::from_pem(&tls.client_cert, &tls.client_key));
-        endpoint = endpoint
-            .tls_config(tls_config)
-            .map_err(|e| ActivationError::ConnectionFailed(e.to_string()))?;
-    }
+    let tls_config = ClientTlsConfig::new()
+        .ca_certificate(Certificate::from_pem(&tls.ca_cert))
+        .identity(Identity::from_pem(&tls.client_cert, &tls.client_key));
+    endpoint = endpoint
+        .tls_config(tls_config)
+        .map_err(|e| ActivationError::ConnectionFailed(e.to_string()))?;
 
     let channel = endpoint
         .connect()
