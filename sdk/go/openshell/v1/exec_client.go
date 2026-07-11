@@ -316,8 +316,10 @@ func (s *interactiveSession) ExitCode() (int, error) {
 }
 
 func (s *interactiveSession) Close() error {
-	s.cancel()
 	s.sendMu.Lock()
-	defer s.sendMu.Unlock()
-	return s.stream.CloseSend()
+	err := s.stream.CloseSend()
+	s.sendMu.Unlock()
+	s.cancel()
+	<-s.done
+	return err
 }
