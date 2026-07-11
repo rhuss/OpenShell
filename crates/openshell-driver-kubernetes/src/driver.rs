@@ -731,7 +731,43 @@ impl KubernetesComputeDriver {
                     result = sandbox_stream.try_next() => match result {
                         Ok(Some(Event::Applied(obj))) => {
                             let obj_name = obj.metadata.name.clone().unwrap_or_default();
-                            if let Ok(sandbox) = sandbox_from_object(&namespace, obj) {
+                            let Ok(sandbox) = sandbox_from_object(&namespace, obj) else {
+                                debug!(object_name = %obj_name, "skipping non-gateway Sandbox in Applied event");
+                                continue;
+                            };
+                            update_indexes(&mut sandbox_name_to_id, &mut agent_pod_to_id, &sandbox);
+                            let event = WatchSandboxesEvent {
+                                payload: Some(watch_sandboxes_event::Payload::Sandbox(
+                                    WatchSandboxesSandboxEvent { sandbox: Some(sandbox) }
+                                )),
+                            };
+                            if tx.send(Ok(event)).await.is_err() {
+                                break;
+                            }
+                        }
+                        Ok(Some(Event::Deleted(obj))) => {
+                            let obj_name = obj.metadata.name.clone().unwrap_or_default();
+                            let Ok(sandbox_id) = sandbox_id_from_object(&obj) else {
+                                debug!(object_name = %obj_name, "skipping non-gateway Sandbox in Deleted event");
+                                continue;
+                            };
+                            remove_indexes(&mut sandbox_name_to_id, &mut agent_pod_to_id, &sandbox_id);
+                            let event = WatchSandboxesEvent {
+                                payload: Some(watch_sandboxes_event::Payload::Deleted(
+                                    WatchSandboxesDeletedEvent { sandbox_id }
+                                )),
+                            };
+                            if tx.send(Ok(event)).await.is_err() {
+                                break;
+                            }
+                        }
+                        Ok(Some(Event::Restarted(objs))) => {
+                            for obj in objs {
+                                let obj_name = obj.metadata.name.clone().unwrap_or_default();
+                                let Ok(sandbox) = sandbox_from_object(&namespace, obj) else {
+                                    debug!(object_name = %obj_name, "skipping non-gateway Sandbox in Restarted event");
+                                    continue;
+                                };
                                 update_indexes(&mut sandbox_name_to_id, &mut agent_pod_to_id, &sandbox);
                                 let event = WatchSandboxesEvent {
                                     payload: Some(watch_sandboxes_event::Payload::Sandbox(
@@ -739,43 +775,7 @@ impl KubernetesComputeDriver {
                                     )),
                                 };
                                 if tx.send(Ok(event)).await.is_err() {
-                                    break;
-                                }
-                            } else {
-                                debug!(object_name = %obj_name, "skipping unrecognized Sandbox object in Applied event");
-                            }
-                        }
-                        Ok(Some(Event::Deleted(obj))) => {
-                            let obj_name = obj.metadata.name.clone().unwrap_or_default();
-                            if let Ok(sandbox_id) = sandbox_id_from_object(&obj) {
-                                remove_indexes(&mut sandbox_name_to_id, &mut agent_pod_to_id, &sandbox_id);
-                                let event = WatchSandboxesEvent {
-                                    payload: Some(watch_sandboxes_event::Payload::Deleted(
-                                        WatchSandboxesDeletedEvent { sandbox_id }
-                                    )),
-                                };
-                                if tx.send(Ok(event)).await.is_err() {
-                                    break;
-                                }
-                            } else {
-                                debug!(object_name = %obj_name, "skipping unrecognized Sandbox object in Deleted event");
-                            }
-                        }
-                        Ok(Some(Event::Restarted(objs))) => {
-                            for obj in objs {
-                                let obj_name = obj.metadata.name.clone().unwrap_or_default();
-                                if let Ok(sandbox) = sandbox_from_object(&namespace, obj) {
-                                    update_indexes(&mut sandbox_name_to_id, &mut agent_pod_to_id, &sandbox);
-                                    let event = WatchSandboxesEvent {
-                                        payload: Some(watch_sandboxes_event::Payload::Sandbox(
-                                            WatchSandboxesSandboxEvent { sandbox: Some(sandbox) }
-                                        )),
-                                    };
-                                    if tx.send(Ok(event)).await.is_err() {
-                                        return;
-                                    }
-                                } else {
-                                    debug!(object_name = %obj_name, "skipping unrecognized Sandbox object in Restarted event");
+                                    return;
                                 }
                             }
                         }
