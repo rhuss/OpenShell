@@ -65,7 +65,8 @@ func ExecResultFromEvents(events []*pb.ExecSandboxEvent) (*types.ExecResult, err
 	}
 
 	var stdout, stderr []byte
-	exitCode := -1
+	exitCode := 0
+	hasExit := false
 
 	for _, event := range events {
 		chunk, code, err := ExecChunkFromEvent(event)
@@ -81,10 +82,11 @@ func ExecResultFromEvents(events []*pb.ExecSandboxEvent) (*types.ExecResult, err
 			}
 		} else {
 			exitCode = code
+			hasExit = true
 		}
 	}
 
-	if exitCode == -1 {
+	if !hasExit {
 		return nil, fmt.Errorf("no exit event received")
 	}
 

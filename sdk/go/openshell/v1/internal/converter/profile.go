@@ -170,30 +170,30 @@ func ProviderProfileFromProto(p *pb.ProviderProfile) *types.ProviderProfile {
 
 	// Credentials
 	if creds := p.GetCredentials(); len(creds) > 0 {
-		result.Credentials = make([]types.ProfileCredential, len(creds))
-		for i, c := range creds {
+		result.Credentials = make([]types.ProfileCredential, 0, len(creds))
+		for _, c := range creds {
 			if converted := ProfileCredentialFromProto(c); converted != nil {
-				result.Credentials[i] = *converted
+				result.Credentials = append(result.Credentials, *converted)
 			}
 		}
 	}
 
 	// Endpoints
 	if eps := p.GetEndpoints(); len(eps) > 0 {
-		result.Endpoints = make([]types.NetworkEndpoint, len(eps))
-		for i, ep := range eps {
+		result.Endpoints = make([]types.NetworkEndpoint, 0, len(eps))
+		for _, ep := range eps {
 			if converted := NetworkEndpointFromProto(ep); converted != nil {
-				result.Endpoints[i] = *converted
+				result.Endpoints = append(result.Endpoints, *converted)
 			}
 		}
 	}
 
 	// Binaries
 	if bins := p.GetBinaries(); len(bins) > 0 {
-		result.Binaries = make([]types.NetworkBinary, len(bins))
-		for i, b := range bins {
+		result.Binaries = make([]types.NetworkBinary, 0, len(bins))
+		for _, b := range bins {
 			if converted := NetworkBinaryFromProto(b); converted != nil {
-				result.Binaries[i] = *converted
+				result.Binaries = append(result.Binaries, *converted)
 			}
 		}
 	}

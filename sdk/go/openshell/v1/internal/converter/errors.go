@@ -15,6 +15,7 @@ var grpcToSDK = map[codes.Code]types.ErrorCode{
 	codes.AlreadyExists:    types.ErrorAlreadyExists,
 	codes.Unavailable:      types.ErrorUnavailable,
 	codes.PermissionDenied: types.ErrorPermissionDenied,
+	codes.Unauthenticated:  types.ErrorPermissionDenied,
 	codes.InvalidArgument:  types.ErrorInvalidArgument,
 	codes.DeadlineExceeded: types.ErrorDeadlineExceeded,
 	codes.Canceled:         types.ErrorCancelled,

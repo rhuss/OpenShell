@@ -76,6 +76,8 @@ func buildTLSCredentials(cfg *TLSParams) (credentials.TransportCredentials, erro
 			return nil, fmt.Errorf("load client cert: %w", err)
 		}
 		tlsConfig.Certificates = []tls.Certificate{cert}
+	} else if cfg.CertFile != "" || cfg.KeyFile != "" {
+		return nil, fmt.Errorf("both CertFile and KeyFile must be provided for client certificate authentication")
 	}
 
 	return credentials.NewTLS(tlsConfig), nil

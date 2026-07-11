@@ -98,6 +98,16 @@ func (r *refreshableAuth) GetRequestMetadata(_ context.Context, _ ...string) (ma
 		return nil, err
 	}
 
+	if newTok == nil {
+		if r.tok != nil {
+			if r.logger != nil {
+				r.logger.Error(errors.New("token source returned nil token"), "token refresh returned nil, using cached token")
+			}
+			return map[string]string{"authorization": "Bearer " + r.tok.AccessToken}, nil
+		}
+		return nil, errors.New("openshell: token source returned nil token")
+	}
+
 	r.tok = newTok
 	return map[string]string{"authorization": "Bearer " + r.tok.AccessToken}, nil
 }

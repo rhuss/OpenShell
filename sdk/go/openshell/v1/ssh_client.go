@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 
 	"github.com/NVIDIA/OpenShell/sdk/go/openshell/v1/internal/converter"
 	pb "github.com/NVIDIA/OpenShell/sdk/go/proto/openshellv1"
@@ -78,7 +79,9 @@ func (s *sshClient) Tunnel(ctx context.Context, sandboxName string, port uint32,
 	revokeSession := true
 	defer func() {
 		if revokeSession {
-			_, _ = s.RevokeSession(context.Background(), session.Token)
+			rCtx, rCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer rCancel()
+			_, _ = s.RevokeSession(rCtx, session.Token)
 		}
 	}()
 
@@ -121,7 +124,9 @@ func (s *sshClient) Tunnel(ctx context.Context, sandboxName string, port uint32,
 	t := &sshTunnel{
 		tcpForwardConn: conn,
 		revokeFunc: func() {
-			_, _ = s.RevokeSession(context.Background(), session.Token)
+			rCtx, rCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer rCancel()
+			_, _ = s.RevokeSession(rCtx, session.Token)
 		},
 	}
 
