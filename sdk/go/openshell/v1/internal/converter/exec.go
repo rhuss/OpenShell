@@ -65,7 +65,7 @@ func ExecResultFromEvents(events []*pb.ExecSandboxEvent) (*types.ExecResult, err
 	}
 
 	var stdout, stderr []byte
-	exitCode := 0
+	var exitCode int
 	hasExit := false
 
 	for _, event := range events {

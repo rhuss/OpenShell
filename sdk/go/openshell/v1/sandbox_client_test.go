@@ -53,6 +53,8 @@ func newMockSandboxServer() *mockSandboxServer {
 }
 
 func (s *mockSandboxServer) CreateSandbox(_ context.Context, req *pb.CreateSandboxRequest) (*pb.SandboxResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.createErr != nil {
 		return nil, s.createErr
 	}
@@ -94,6 +96,8 @@ func (s *mockSandboxServer) setPhase(name string, phase pb.SandboxPhase) {
 }
 
 func (s *mockSandboxServer) ListSandboxes(_ context.Context, _ *pb.ListSandboxesRequest) (*pb.ListSandboxesResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.listErr != nil {
 		return nil, s.listErr
 	}
@@ -105,6 +109,8 @@ func (s *mockSandboxServer) ListSandboxes(_ context.Context, _ *pb.ListSandboxes
 }
 
 func (s *mockSandboxServer) DeleteSandbox(_ context.Context, req *pb.DeleteSandboxRequest) (*pb.DeleteSandboxResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.deleteErr != nil {
 		return nil, s.deleteErr
 	}
@@ -117,6 +123,8 @@ func (s *mockSandboxServer) DeleteSandbox(_ context.Context, req *pb.DeleteSandb
 }
 
 func (s *mockSandboxServer) AttachSandboxProvider(_ context.Context, req *pb.AttachSandboxProviderRequest) (*pb.AttachSandboxProviderResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.attachErr != nil {
 		return nil, s.attachErr
 	}
@@ -129,6 +137,8 @@ func (s *mockSandboxServer) AttachSandboxProvider(_ context.Context, req *pb.Att
 }
 
 func (s *mockSandboxServer) DetachSandboxProvider(_ context.Context, req *pb.DetachSandboxProviderRequest) (*pb.DetachSandboxProviderResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.detachErr != nil {
 		return nil, s.detachErr
 	}
@@ -140,6 +150,8 @@ func (s *mockSandboxServer) DetachSandboxProvider(_ context.Context, req *pb.Det
 }
 
 func (s *mockSandboxServer) ListSandboxProviders(_ context.Context, req *pb.ListSandboxProvidersRequest) (*pb.ListSandboxProvidersResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.listProvErr != nil {
 		return nil, s.listProvErr
 	}

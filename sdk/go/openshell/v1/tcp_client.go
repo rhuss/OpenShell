@@ -299,6 +299,8 @@ type tcpForwardConn struct {
 	errOnce   sync.Once
 	err       error
 	buf       []byte
+	closeOnce sync.Once
+	closeErr  error
 }
 
 func (c *tcpForwardConn) setErr(err error) {
@@ -367,10 +369,12 @@ func (c *tcpForwardConn) Write(p []byte) (int, error) {
 }
 
 func (c *tcpForwardConn) Close() error {
-	c.sendMu.Lock()
-	err := c.stream.CloseSend()
-	c.sendMu.Unlock()
-	c.cancel()
-	<-c.done
-	return err
+	c.closeOnce.Do(func() {
+		c.sendMu.Lock()
+		c.closeErr = c.stream.CloseSend()
+		c.sendMu.Unlock()
+		c.cancel()
+		<-c.done
+	})
+	return c.closeErr
 }
