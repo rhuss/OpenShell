@@ -229,3 +229,9 @@ scripts/lint-mermaid/node_modules/
 # Nix
 /result
 /result-*
+
+# spex: generated/local files (only constitution is committed)
+**/.claude/
+**/.specify/**
+!**/.specify/memory/
+!**/.specify/memory/constitution.md

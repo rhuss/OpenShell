@@ -961,6 +961,30 @@ pub async fn run_unidentified(
                 sandbox_id = %sandbox_id,
                 "Activation complete, supervisor transitioned to active mode"
             );
+
+            // Stay alive: the spawned ConnectSupervisor session and
+            // networking tasks run as tokio tasks. Wait for a signal
+            // to keep the process (and the runtime) alive.
+            #[cfg(unix)]
+            {
+                use tokio::signal::unix::{SignalKind, signal};
+                if let Ok(mut sigterm) = signal(SignalKind::terminate()) {
+                    tokio::select! {
+                        _ = tokio::signal::ctrl_c() => {
+                            info!("Received SIGINT, shutting down activated supervisor");
+                        }
+                        _ = sigterm.recv() => {
+                            info!("Received SIGTERM, shutting down activated supervisor");
+                        }
+                    }
+                } else {
+                    let _ = tokio::signal::ctrl_c().await;
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = tokio::signal::ctrl_c().await;
+            }
         }
     }
 
