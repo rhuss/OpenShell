@@ -19,11 +19,11 @@ use crate::BootstrapError;
 
 pub struct SupervisorService {
     activated: AtomicBool,
-    activation_tx: std::sync::Mutex<Option<oneshot::Sender<String>>>,
+    activation_tx: std::sync::Mutex<Option<oneshot::Sender<i32>>>,
 }
 
 impl SupervisorService {
-    pub fn new(activation_tx: oneshot::Sender<String>) -> Self {
+    pub fn new(activation_tx: oneshot::Sender<i32>) -> Self {
         Self {
             activated: AtomicBool::new(false),
             activation_tx: std::sync::Mutex::new(Some(activation_tx)),
@@ -107,7 +107,7 @@ impl Supervisor for SupervisorService {
                 .build()
         );
 
-        if let Err(e) = crate::bootstrap_sandbox(
+        let bootstrap_ctx = match crate::bootstrap_sandbox(
             &req.sandbox_id,
             &req.sandbox_name,
             req.sandbox_token,
@@ -116,50 +116,53 @@ impl Supervisor for SupervisorService {
         )
         .await
         {
-            self.activated.store(false, Ordering::Release);
-            let error_code = e.to_error_code();
-            let error_msg = e.to_string();
+            Ok(ctx) => ctx,
+            Err(e) => {
+                self.activated.store(false, Ordering::Release);
+                let error_code = e.to_error_code();
+                let error_msg = e.to_string();
 
-            ocsf_emit!(
-                AppLifecycleBuilder::new(crate::ocsf_ctx())
-                    .activity(ActivityId::Fail)
-                    .severity(SeverityId::Medium)
-                    .status(StatusId::Failure)
-                    .message(format!(
-                        "Warm pool activation failed [sandbox_id:{}]: {error_msg}",
-                        req.sandbox_id
-                    ))
-                    .build()
-            );
-            ocsf_emit!(
-                DetectionFindingBuilder::new(crate::ocsf_ctx())
-                    .activity(ActivityId::Open)
-                    .severity(SeverityId::Medium)
-                    .action(ActionId::Denied)
-                    .disposition(DispositionId::Blocked)
-                    .finding_info(
-                        FindingInfo::new(
-                            "warm-pool-activation-failure",
-                            "Warm Pool Activation Failure",
+                ocsf_emit!(
+                    AppLifecycleBuilder::new(crate::ocsf_ctx())
+                        .activity(ActivityId::Fail)
+                        .severity(SeverityId::Medium)
+                        .status(StatusId::Failure)
+                        .message(format!(
+                            "Warm pool activation failed [sandbox_id:{}]: {error_msg}",
+                            req.sandbox_id
+                        ))
+                        .build()
+                );
+                ocsf_emit!(
+                    DetectionFindingBuilder::new(crate::ocsf_ctx())
+                        .activity(ActivityId::Open)
+                        .severity(SeverityId::Medium)
+                        .action(ActionId::Denied)
+                        .disposition(DispositionId::Blocked)
+                        .finding_info(
+                            FindingInfo::new(
+                                "warm-pool-activation-failure",
+                                "Warm Pool Activation Failure",
+                            )
+                            .with_desc(&format!(
+                                "Supervisor activation failed for sandbox {}: {error_msg}",
+                                req.sandbox_id,
+                            )),
                         )
-                        .with_desc(&format!(
-                            "Supervisor activation failed for sandbox {}: {error_msg}",
-                            req.sandbox_id,
-                        )),
-                    )
-                    .message(format!(
-                        "Activation bootstrap failed [sandbox_id:{}]",
-                        req.sandbox_id
-                    ))
-                    .build()
-            );
+                        .message(format!(
+                            "Activation bootstrap failed [sandbox_id:{}]",
+                            req.sandbox_id
+                        ))
+                        .build()
+                );
 
-            return Ok(Response::new(ActivateSandboxResponse {
-                success: false,
-                error_message: error_msg,
-                error_code: error_code.into(),
-            }));
-        }
+                return Ok(Response::new(ActivateSandboxResponse {
+                    success: false,
+                    error_message: error_msg,
+                    error_code: error_code.into(),
+                }));
+            }
+        };
 
         ocsf_emit!(
             AppLifecycleBuilder::new(crate::ocsf_ctx())
@@ -175,7 +178,21 @@ impl Supervisor for SupervisorService {
 
         let sender = self.activation_tx.lock().unwrap().take();
         if let Some(sender) = sender {
-            let _ = sender.send(req.sandbox_id.clone());
+            let sandbox_id = req.sandbox_id.clone();
+            tokio::spawn(async move {
+                let exit_code = match crate::post_identity_bootstrap(bootstrap_ctx).await {
+                    Ok(code) => code,
+                    Err(e) => {
+                        tracing::error!(
+                            sandbox_id = %sandbox_id,
+                            error = %e,
+                            "post_identity_bootstrap failed"
+                        );
+                        1
+                    }
+                };
+                let _ = sender.send(exit_code);
+            });
         }
 
         Ok(Response::new(ActivateSandboxResponse {
