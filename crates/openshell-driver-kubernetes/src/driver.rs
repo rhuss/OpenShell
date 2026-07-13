@@ -966,7 +966,9 @@ impl KubernetesComputeDriver {
                 }
             };
 
-        let Some(pool) = crate::warm_pool::find_matching_pool(&pools, image) else {
+        let Some(pool) =
+            crate::warm_pool::find_matching_pool(&self.client, &self.config.namespace, &pools, image).await
+        else {
             debug!(image = %image, "No warm pool found for image");
             return None;
         };
