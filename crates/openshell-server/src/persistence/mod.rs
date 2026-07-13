@@ -81,6 +81,7 @@ pub struct ObjectRecord {
     pub object_type: String,
     pub id: String,
     pub name: String,
+    pub workspace: String,
     pub payload: Vec<u8>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
@@ -125,7 +126,7 @@ pub trait ObjectType {
 // Import object metadata accessor traits from openshell-core
 // (implementations for all proto types are in openshell-core::metadata)
 pub use openshell_core::{
-    GetResourceVersion, ObjectId, ObjectLabels, ObjectName, SetResourceVersion,
+    GetResourceVersion, ObjectId, ObjectLabels, ObjectName, ObjectWorkspace, SetResourceVersion,
 };
 
 /// Generate a random 6-character lowercase alphabetic name.
@@ -221,6 +222,7 @@ impl Store {
     /// * `object_type` - Type discriminator for the object
     /// * `id` - Stable object identifier
     /// * `name` - Human-readable object name
+    /// * `workspace` - Workspace scope for multi-tenant isolation
     /// * `payload` - Serialized object data
     /// * `labels` - Optional JSON-serialized labels
     /// * `condition` - Write precondition (`MustCreate`, `MatchResourceVersion`, or `Unconditional`)
@@ -229,16 +231,18 @@ impl Store {
     /// * `Ok(WriteResult)` - Write succeeded with new `resource_version` and timestamps
     /// * `Err(Conflict)` - Resource version mismatch (for `MatchResourceVersion`)
     /// * `Err(UniqueViolation)` - Object already exists (for `MustCreate`) or name conflict
+    #[allow(clippy::too_many_arguments)]
     pub async fn put_if(
         &self,
         object_type: &str,
         id: &str,
         name: &str,
+        workspace: &str,
         payload: &[u8],
         labels: Option<&str>,
         condition: WriteCondition,
     ) -> PersistenceResult<WriteResult> {
-        store_dispatch!(self.put_if(object_type, id, name, payload, labels, condition))
+        store_dispatch!(self.put_if(object_type, id, name, workspace, payload, labels, condition))
     }
 
     /// Delete an object by id with compare-and-swap support.
@@ -262,16 +266,18 @@ impl Store {
     }
 
     /// Insert or update a generic named object with an application-owned scope.
+    #[allow(clippy::too_many_arguments)]
     pub async fn put_scoped(
         &self,
         object_type: &str,
         id: &str,
         name: &str,
+        workspace: &str,
         scope: &str,
         payload: &[u8],
         labels: Option<&str>,
     ) -> PersistenceResult<()> {
-        store_dispatch!(self.put_scoped(object_type, id, name, scope, payload, labels))
+        store_dispatch!(self.put_scoped(object_type, id, name, workspace, scope, payload, labels))
     }
 
     /// Fetch an object by id.
@@ -283,13 +289,14 @@ impl Store {
         store_dispatch!(self.get(object_type, id))
     }
 
-    /// Fetch an object by name within an object type.
+    /// Fetch an object by name within an object type and workspace.
     pub async fn get_by_name(
         &self,
         object_type: &str,
+        workspace: &str,
         name: &str,
     ) -> PersistenceResult<Option<ObjectRecord>> {
-        store_dispatch!(self.get_by_name(object_type, name))
+        store_dispatch!(self.get_by_name(object_type, workspace, name))
     }
 
     /// Delete an object by id.
@@ -297,19 +304,35 @@ impl Store {
         store_dispatch!(self.delete(object_type, id))
     }
 
-    /// Delete an object by name within an object type.
-    pub async fn delete_by_name(&self, object_type: &str, name: &str) -> PersistenceResult<bool> {
-        store_dispatch!(self.delete_by_name(object_type, name))
+    /// Delete an object by name within an object type and workspace.
+    pub async fn delete_by_name(
+        &self,
+        object_type: &str,
+        workspace: &str,
+        name: &str,
+    ) -> PersistenceResult<bool> {
+        store_dispatch!(self.delete_by_name(object_type, workspace, name))
     }
 
-    /// List objects by type.
+    /// List objects by type and workspace.
     pub async fn list(
+        &self,
+        object_type: &str,
+        workspace: &str,
+        limit: u32,
+        offset: u32,
+    ) -> PersistenceResult<Vec<ObjectRecord>> {
+        store_dispatch!(self.list(object_type, workspace, limit, offset))
+    }
+
+    /// List objects by type across all workspaces.
+    pub async fn list_by_type(
         &self,
         object_type: &str,
         limit: u32,
         offset: u32,
     ) -> PersistenceResult<Vec<ObjectRecord>> {
-        store_dispatch!(self.list(object_type, limit, offset))
+        store_dispatch!(self.list_by_type(object_type, limit, offset))
     }
 
     /// List objects by type and application-owned scope.
@@ -323,16 +346,23 @@ impl Store {
         store_dispatch!(self.list_by_scope(object_type, scope, limit, offset))
     }
 
-    /// List objects by type with label selector filtering.
+    /// List objects by type and workspace with label selector filtering.
     /// Label selector format: "key1=value1,key2=value2" (comma-separated equality matches).
     pub async fn list_with_selector(
         &self,
         object_type: &str,
+        workspace: &str,
         label_selector: &str,
         limit: u32,
         offset: u32,
     ) -> PersistenceResult<Vec<ObjectRecord>> {
-        store_dispatch!(self.list_with_selector(object_type, label_selector, limit, offset))
+        store_dispatch!(self.list_with_selector(
+            object_type,
+            workspace,
+            label_selector,
+            limit,
+            offset
+        ))
     }
 
     // -----------------------------------------------------------------------
@@ -341,12 +371,17 @@ impl Store {
 
     /// Insert or update a protobuf message under an application-owned scope.
     pub async fn put_scoped_message<
-        T: Message + ObjectType + ObjectId + ObjectName + ObjectLabels,
+        T: Message + ObjectType + ObjectId + ObjectName + ObjectLabels + ObjectWorkspace,
     >(
         &self,
         message: &T,
         scope: &str,
     ) -> PersistenceResult<()> {
+        debug_assert!(
+            !T::requires_workspace() || !message.object_workspace().is_empty(),
+            "{} requires a non-empty workspace",
+            T::object_type(),
+        );
         let labels_map = message.object_labels();
         let labels_json = if labels_map.as_ref().is_none_or(HashMap::is_empty) {
             None
@@ -360,6 +395,7 @@ impl Store {
             T::object_type(),
             message.object_id(),
             message.object_name(),
+            message.object_workspace(),
             scope,
             &message.encode_to_vec(),
             labels_json.as_deref(),
@@ -378,25 +414,41 @@ impl Store {
             .transpose()
     }
 
-    /// Fetch and decode a protobuf message by name.
+    /// Fetch and decode a protobuf message by workspace and name.
     pub async fn get_message_by_name<T: Message + Default + ObjectType + SetResourceVersion>(
         &self,
+        workspace: &str,
         name: &str,
     ) -> PersistenceResult<Option<T>> {
-        self.get_by_name(T::object_type(), name)
+        self.get_by_name(T::object_type(), workspace, name)
             .await?
             .map(decode_record)
             .transpose()
     }
 
-    /// List and decode protobuf messages, hydrating `resource_version` from
-    /// the authoritative DB row (mirrors `get_message`).
+    /// List and decode protobuf messages by workspace, hydrating
+    /// `resource_version` from the authoritative DB row (mirrors `get_message`).
     pub async fn list_messages<T: Message + Default + ObjectType + SetResourceVersion>(
+        &self,
+        workspace: &str,
+        limit: u32,
+        offset: u32,
+    ) -> PersistenceResult<Vec<T>> {
+        self.list(T::object_type(), workspace, limit, offset)
+            .await?
+            .into_iter()
+            .map(decode_record)
+            .collect()
+    }
+
+    /// List and decode protobuf messages across all workspaces, hydrating
+    /// `resource_version` from the authoritative DB row.
+    pub async fn list_all_messages<T: Message + Default + ObjectType + SetResourceVersion>(
         &self,
         limit: u32,
         offset: u32,
     ) -> PersistenceResult<Vec<T>> {
-        self.list(T::object_type(), limit, offset)
+        self.list_by_type(T::object_type(), limit, offset)
             .await?
             .into_iter()
             .map(decode_record)
@@ -409,11 +461,12 @@ impl Store {
         T: Message + Default + ObjectType + SetResourceVersion,
     >(
         &self,
+        workspace: &str,
         label_selector: &str,
         limit: u32,
         offset: u32,
     ) -> PersistenceResult<Vec<T>> {
-        self.list_with_selector(T::object_type(), label_selector, limit, offset)
+        self.list_with_selector(T::object_type(), workspace, label_selector, limit, offset)
             .await?
             .into_iter()
             .map(decode_record)
@@ -450,6 +503,7 @@ impl Store {
             + ObjectId
             + ObjectName
             + ObjectLabels
+            + ObjectWorkspace
             + SetResourceVersion
             + GetResourceVersion
             + Clone,
@@ -491,12 +545,19 @@ impl Store {
             })?)
         };
 
+        debug_assert!(
+            !T::requires_workspace() || !updated.object_workspace().is_empty(),
+            "{} requires a non-empty workspace",
+            T::object_type(),
+        );
+
         // Single-attempt CAS write - fails with Conflict on version mismatch
         let result = self
             .put_if(
                 T::object_type(),
                 updated.object_id(),
                 updated.object_name(),
+                updated.object_workspace(),
                 &updated.encode_to_vec(),
                 labels_json.as_deref(),
                 WriteCondition::MatchResourceVersion(cas_version),
@@ -531,7 +592,7 @@ fn infer_sqlite_unique_constraint(message: &str) -> Option<String> {
         Some("objects_version_uq".to_string())
     } else if message.contains("objects.object_type, objects.scope, objects.dedup_key") {
         Some("objects_dedup_uq".to_string())
-    } else if message.contains("objects.object_type, objects.name") {
+    } else if message.contains("objects.object_type, objects.workspace, objects.name") {
         Some("objects_name_uq".to_string())
     } else if message.contains("objects.id") {
         Some("objects_pkey".to_string())
@@ -596,16 +657,24 @@ impl Store {
         object_type: &str,
         id: &str,
         name: &str,
+        workspace: &str,
         payload: &[u8],
         labels: Option<&str>,
     ) -> PersistenceResult<()> {
-        store_dispatch!(self.put(object_type, id, name, payload, labels))
+        store_dispatch!(self.put(object_type, id, name, workspace, payload, labels))
     }
 
-    pub async fn put_message<T: Message + ObjectType + ObjectId + ObjectName + ObjectLabels>(
+    pub async fn put_message<
+        T: Message + ObjectType + ObjectId + ObjectName + ObjectLabels + ObjectWorkspace,
+    >(
         &self,
         message: &T,
     ) -> PersistenceResult<()> {
+        debug_assert!(
+            !T::requires_workspace() || !message.object_workspace().is_empty(),
+            "{} requires a non-empty workspace",
+            T::object_type(),
+        );
         let labels_map = message.object_labels();
         let labels_json = if labels_map.as_ref().is_none_or(HashMap::is_empty) {
             None
@@ -618,6 +687,7 @@ impl Store {
             T::object_type(),
             message.object_id(),
             message.object_name(),
+            message.object_workspace(),
             &message.encode_to_vec(),
             labels_json.as_deref(),
         )

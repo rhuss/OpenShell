@@ -30,9 +30,18 @@ message ObjectMeta {
   // Incremented by the gateway on each update. Clients can use this for compare-and-swap operations.
   uint64 resource_version = 5;
 
-  // Opaque key-value metadata that is not used for selectors.
-  // Annotation keys use the same qualified-key shape as labels, but values may be longer.
-  map<string, string> annotations = 6;
+  // Workspace that owns this resource. Empty is normalized to "default" by the
+  // gateway. Immutable after creation.
+  string workspace = 6;
+}
+
+// Workspace resource. A hard isolation boundary for sandboxes, providers, and
+// other workspace-scoped resources.
+message Workspace {
+  // Kubernetes-style metadata (id, name, labels, timestamps, resource version).
+  // The workspace field in this ObjectMeta is unused (a workspace does not
+  // belong to another workspace).
+  ObjectMeta metadata = 1;
 }
 
 // Provider model stored by OpenShell.

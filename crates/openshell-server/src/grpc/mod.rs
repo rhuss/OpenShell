@@ -9,41 +9,45 @@ pub mod provider;
 mod sandbox;
 mod service;
 mod validation;
+pub mod workspace;
 
 use openshell_core::proto::{
-    ApproveAllDraftChunksRequest, ApproveAllDraftChunksResponse, ApproveDraftChunkRequest,
-    ApproveDraftChunkResponse, AttachSandboxProviderRequest, AttachSandboxProviderResponse,
-    ClearDraftChunksRequest, ClearDraftChunksResponse, ComputeDriverCapabilities,
-    ComputeDriverInfo, ConfigureProviderRefreshRequest, ConfigureProviderRefreshResponse,
+    AddWorkspaceMemberRequest, AddWorkspaceMemberResponse, ApproveAllDraftChunksRequest,
+    ApproveAllDraftChunksResponse, ApproveDraftChunkRequest, ApproveDraftChunkResponse,
+    AttachSandboxProviderRequest, AttachSandboxProviderResponse, ClearDraftChunksRequest,
+    ClearDraftChunksResponse, ConfigureProviderRefreshRequest, ConfigureProviderRefreshResponse,
     CreateProviderRequest, CreateSandboxRequest, CreateSshSessionRequest, CreateSshSessionResponse,
-    DeleteProviderProfileRequest, DeleteProviderProfileResponse, DeleteProviderRefreshRequest,
-    DeleteProviderRefreshResponse, DeleteProviderRequest, DeleteProviderResponse,
-    DeleteSandboxRequest, DeleteSandboxResponse, DeleteServiceRequest, DeleteServiceResponse,
+    CreateWorkspaceRequest, CreateWorkspaceResponse, DeleteProviderProfileRequest,
+    DeleteProviderProfileResponse, DeleteProviderRefreshRequest, DeleteProviderRefreshResponse,
+    DeleteProviderRequest, DeleteProviderResponse, DeleteSandboxRequest, DeleteSandboxResponse,
+    DeleteServiceRequest, DeleteServiceResponse, DeleteWorkspaceRequest, DeleteWorkspaceResponse,
     DetachSandboxProviderRequest, DetachSandboxProviderResponse, EditDraftChunkRequest,
     EditDraftChunkResponse, ExecSandboxEvent, ExecSandboxInput, ExecSandboxRequest,
     ExposeServiceRequest, GatewayMessage, GetDraftHistoryRequest, GetDraftHistoryResponse,
     GetDraftPolicyRequest, GetDraftPolicyResponse, GetGatewayConfigRequest,
-    GetGatewayConfigResponse, GetGatewayInfoRequest, GetGatewayInfoResponse,
-    GetProviderProfileRequest, GetProviderRefreshStatusRequest, GetProviderRefreshStatusResponse,
-    GetProviderRequest, GetSandboxConfigRequest, GetSandboxConfigResponse, GetSandboxLogsRequest,
-    GetSandboxLogsResponse, GetSandboxPolicyStatusRequest, GetSandboxPolicyStatusResponse,
+    GetGatewayConfigResponse, GetProviderProfileRequest, GetProviderRefreshStatusRequest,
+    GetProviderRefreshStatusResponse, GetProviderRequest, GetSandboxConfigRequest,
+    GetSandboxConfigResponse, GetSandboxLogsRequest, GetSandboxLogsResponse,
+    GetSandboxPolicyStatusRequest, GetSandboxPolicyStatusResponse,
     GetSandboxProviderEnvironmentRequest, GetSandboxProviderEnvironmentResponse, GetSandboxRequest,
-    GetServiceRequest, HealthRequest, HealthResponse, ImportProviderProfilesRequest,
-    ImportProviderProfilesResponse, IssueSandboxTokenRequest, IssueSandboxTokenResponse,
-    LintProviderProfilesRequest, LintProviderProfilesResponse, ListProviderProfilesRequest,
-    ListProviderProfilesResponse, ListProvidersRequest, ListProvidersResponse,
-    ListSandboxPoliciesRequest, ListSandboxPoliciesResponse, ListSandboxProvidersRequest,
-    ListSandboxProvidersResponse, ListSandboxesRequest, ListSandboxesResponse, ListServicesRequest,
-    ListServicesResponse, ProviderProfileResponse, ProviderResponse, PushSandboxLogsRequest,
-    PushSandboxLogsResponse, RefreshSandboxTokenRequest, RefreshSandboxTokenResponse,
-    RejectDraftChunkRequest, RejectDraftChunkResponse, RelayFrame, ReportPolicyStatusRequest,
-    ReportPolicyStatusResponse, RevokeSshSessionRequest, RevokeSshSessionResponse,
-    RotateProviderCredentialRequest, RotateProviderCredentialResponse, SandboxResponse,
-    SandboxStreamEvent, ServiceEndpointResponse, ServiceStatus, SubmitPolicyAnalysisRequest,
-    SubmitPolicyAnalysisResponse, SupervisorMessage, TcpForwardFrame, UndoDraftChunkRequest,
-    UndoDraftChunkResponse, UpdateConfigRequest, UpdateConfigResponse,
-    UpdateProviderProfilesRequest, UpdateProviderProfilesResponse, UpdateProviderRequest,
-    WatchSandboxRequest, open_shell_server::OpenShell,
+    GetServiceRequest, GetWorkspaceRequest, GetWorkspaceResponse, HealthRequest, HealthResponse,
+    ImportProviderProfilesRequest, ImportProviderProfilesResponse, IssueSandboxTokenRequest,
+    IssueSandboxTokenResponse, LintProviderProfilesRequest, LintProviderProfilesResponse,
+    ListProviderProfilesRequest, ListProviderProfilesResponse, ListProvidersRequest,
+    ListProvidersResponse, ListSandboxPoliciesRequest, ListSandboxPoliciesResponse,
+    ListSandboxProvidersRequest, ListSandboxProvidersResponse, ListSandboxesRequest,
+    ListSandboxesResponse, ListServicesRequest, ListServicesResponse, ListWorkspaceMembersRequest,
+    ListWorkspaceMembersResponse, ListWorkspacesRequest, ListWorkspacesResponse,
+    ProviderProfileResponse, ProviderResponse, PushSandboxLogsRequest, PushSandboxLogsResponse,
+    RefreshSandboxTokenRequest, RefreshSandboxTokenResponse, RejectDraftChunkRequest,
+    RejectDraftChunkResponse, RelayFrame, RemoveWorkspaceMemberRequest,
+    RemoveWorkspaceMemberResponse, ReportPolicyStatusRequest, ReportPolicyStatusResponse,
+    RevokeSshSessionRequest, RevokeSshSessionResponse, RotateProviderCredentialRequest,
+    RotateProviderCredentialResponse, SandboxResponse, SandboxStreamEvent, ServiceEndpointResponse,
+    ServiceStatus, SubmitPolicyAnalysisRequest, SubmitPolicyAnalysisResponse, SupervisorMessage,
+    TcpForwardFrame, UndoDraftChunkRequest, UndoDraftChunkResponse, UpdateConfigRequest,
+    UpdateConfigResponse, UpdateProviderProfilesRequest, UpdateProviderProfilesResponse,
+    UpdateProviderRequest, WatchSandboxRequest, open_shell_server::OpenShell,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -698,6 +702,64 @@ impl OpenShell for OpenShellService {
         crate::supervisor_session::handle_relay_stream(&self.state.supervisor_sessions, request)
             .await
     }
+
+    // --- Workspace management ---
+
+    #[rpc_auth(auth = "bearer", scope = "workspace:write", role = "admin")]
+    async fn create_workspace(
+        &self,
+        request: Request<CreateWorkspaceRequest>,
+    ) -> Result<Response<CreateWorkspaceResponse>, Status> {
+        workspace::handle_create_workspace(&self.state, request).await
+    }
+
+    #[rpc_auth(auth = "bearer", scope = "workspace:read", role = "user")]
+    async fn get_workspace(
+        &self,
+        request: Request<GetWorkspaceRequest>,
+    ) -> Result<Response<GetWorkspaceResponse>, Status> {
+        workspace::handle_get_workspace(&self.state, request).await
+    }
+
+    #[rpc_auth(auth = "bearer", scope = "workspace:read", role = "user")]
+    async fn list_workspaces(
+        &self,
+        request: Request<ListWorkspacesRequest>,
+    ) -> Result<Response<ListWorkspacesResponse>, Status> {
+        workspace::handle_list_workspaces(&self.state, request).await
+    }
+
+    #[rpc_auth(auth = "bearer", scope = "workspace:write", role = "admin")]
+    async fn delete_workspace(
+        &self,
+        request: Request<DeleteWorkspaceRequest>,
+    ) -> Result<Response<DeleteWorkspaceResponse>, Status> {
+        workspace::handle_delete_workspace(&self.state, request).await
+    }
+
+    #[rpc_auth(auth = "bearer", scope = "workspace:write", role = "admin")]
+    async fn add_workspace_member(
+        &self,
+        request: Request<AddWorkspaceMemberRequest>,
+    ) -> Result<Response<AddWorkspaceMemberResponse>, Status> {
+        workspace::handle_add_workspace_member(&self.state, request).await
+    }
+
+    #[rpc_auth(auth = "bearer", scope = "workspace:write", role = "admin")]
+    async fn remove_workspace_member(
+        &self,
+        request: Request<RemoveWorkspaceMemberRequest>,
+    ) -> Result<Response<RemoveWorkspaceMemberResponse>, Status> {
+        workspace::handle_remove_workspace_member(&self.state, request).await
+    }
+
+    #[rpc_auth(auth = "bearer", scope = "workspace:read", role = "user")]
+    async fn list_workspace_members(
+        &self,
+        request: Request<ListWorkspaceMembersRequest>,
+    ) -> Result<Response<ListWorkspaceMembersResponse>, Status> {
+        workspace::handle_list_workspace_members(&self.state, request).await
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -725,6 +787,7 @@ pub mod test_support {
                 .await
                 .unwrap(),
         );
+        crate::ensure_default_workspace(&store).await.unwrap();
         let compute = new_test_runtime(store.clone()).await;
         Arc::new(ServerState::new(
             Config::new(None).with_database_url("sqlite::memory:?cache=shared"),

@@ -21,6 +21,7 @@ use crate::tracing_bus::TracingLogBus;
 use futures::{Stream, StreamExt};
 use hyper_util::rt::TokioIo;
 use openshell_core::ComputeDriverKind;
+use openshell_core::ObjectWorkspace;
 use openshell_core::proto::compute::v1::{
     CreateSandboxRequest, DeleteSandboxRequest, DriverCondition, DriverPlatformEvent,
     DriverResourceRequirements, DriverSandbox, DriverSandboxSpec, DriverSandboxStatus,
@@ -515,6 +516,7 @@ impl ComputeRuntime {
                 Sandbox::object_type(),
                 &sandbox_id,
                 sandbox.object_name(),
+                sandbox.object_workspace(),
                 &sandbox.encode_to_vec(),
                 None,
                 WriteCondition::MustCreate,
@@ -583,13 +585,13 @@ impl ComputeRuntime {
         }
     }
 
-    pub async fn delete_sandbox(&self, name: &str) -> Result<bool, Status> {
+    pub async fn delete_sandbox(&self, workspace: &str, name: &str) -> Result<bool, Status> {
         let _guard = self.sync_lock.lock().await;
 
         // Resolve sandbox ID from name
         let sandbox = self
             .store
-            .get_message_by_name::<Sandbox>(name)
+            .get_message_by_name::<Sandbox>(workspace, name)
             .await
             .map_err(|e| Status::internal(format!("fetch sandbox failed: {e}")))?;
 
@@ -718,6 +720,7 @@ impl ComputeRuntime {
                 Sandbox::object_type(),
                 &id,
                 &name,
+                sandbox.object_workspace(),
                 &sandbox.encode_to_vec(),
                 labels_json.as_deref(),
                 WriteCondition::MatchResourceVersion(expected_resource_version),
@@ -774,7 +777,7 @@ impl ComputeRuntime {
 
         let records = self
             .store
-            .list(Sandbox::object_type(), 1000, 0)
+            .list_by_type(Sandbox::object_type(), 1000, 0)
             .await
             .map_err(|e| e.to_string())?;
 
@@ -1074,7 +1077,7 @@ impl ComputeRuntime {
 
         let records = self
             .store
-            .list(Sandbox::object_type(), 500, 0)
+            .list_by_type(Sandbox::object_type(), 500, 0)
             .await
             .map_err(|e| e.to_string())?;
 
@@ -1172,6 +1175,11 @@ impl ComputeRuntime {
             if supervisor_promoted {
                 ensure_supervisor_ready_status(&mut status, &sandbox_name);
             }
+            let workspace = if incoming.workspace.is_empty() {
+                "default".to_string()
+            } else {
+                incoming.workspace.clone()
+            };
             let mut sandbox = Sandbox {
                 metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
                     id: incoming.id.clone(),
@@ -1179,7 +1187,7 @@ impl ComputeRuntime {
                     created_at_ms: now_ms,
                     labels: std::collections::HashMap::new(),
                     resource_version: 0,
-                    annotations: std::collections::HashMap::new(),
+                    workspace,
                 }),
                 spec: None,
                 status,
@@ -1191,6 +1199,7 @@ impl ComputeRuntime {
                     Sandbox::object_type(),
                     &incoming.id,
                     sandbox.object_name(),
+                    sandbox.object_workspace(),
                     &sandbox.encode_to_vec(),
                     None,
                     WriteCondition::MustCreate,
@@ -1396,7 +1405,7 @@ impl ComputeRuntime {
 
         if let Err(e) = self
             .store
-            .delete_by_name(SANDBOX_SETTINGS_OBJECT_TYPE, sandbox.object_name())
+            .delete_by_name(SANDBOX_SETTINGS_OBJECT_TYPE, "", sandbox.object_name())
             .await
         {
             warn!(
@@ -1409,7 +1418,11 @@ impl ComputeRuntime {
     }
 
     async fn cleanup_sandbox_ssh_sessions(&self, sandbox_id: &str) {
-        if let Ok(records) = self.store.list(SshSession::object_type(), 1000, 0).await {
+        if let Ok(records) = self
+            .store
+            .list_by_type(SshSession::object_type(), 1000, 0)
+            .await
+        {
             for record in records {
                 if let Ok(session) = SshSession::decode(record.payload.as_slice())
                     && session.sandbox_id == sandbox_id
@@ -1582,6 +1595,7 @@ fn driver_sandbox_from_public(
             .map(|spec| driver_sandbox_spec_from_public(spec, driver_name))
             .transpose()?,
         status: sandbox.status.as_ref().map(driver_status_from_public),
+        workspace: sandbox.object_workspace().to_string(),
     })
 }
 
@@ -2415,7 +2429,7 @@ mod tests {
                 created_at_ms: 1_000_000,
                 labels: HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             ..Default::default()
         };
@@ -2431,7 +2445,7 @@ mod tests {
                 created_at_ms: 1_000_000,
                 labels: HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             sandbox_id: sandbox_id.to_string(),
             token: format!("token-{id}"),
@@ -2845,6 +2859,7 @@ mod tests {
                     }],
                     deleting: false,
                 }),
+                workspace: "default".to_string(),
             })
             .await
             .unwrap();
@@ -2887,6 +2902,7 @@ mod tests {
                 namespace: "default".to_string(),
                 spec: None,
                 status: None,
+                workspace: "default".to_string(),
             })
             .await
             .unwrap();
@@ -2935,6 +2951,7 @@ mod tests {
                     "Starting",
                     "VM is starting",
                 ))),
+                workspace: "default".to_string(),
             })
             .await
             .unwrap();
@@ -3054,6 +3071,7 @@ mod tests {
                     }],
                     deleting: false,
                 }),
+                workspace: "default".to_string(),
             }],
             current_sandboxes: vec![DriverSandbox {
                 id: "sb-1".to_string(),
@@ -3074,6 +3092,7 @@ mod tests {
                     }],
                     deleting: false,
                 }),
+                workspace: "default".to_string(),
             }],
         }))
         .await;
@@ -3122,6 +3141,7 @@ mod tests {
                     "DependenciesNotReady",
                     "Pod exists with phase: Pending; Service Exists",
                 ))),
+                workspace: "default".to_string(),
             }],
             current_sandboxes: vec![DriverSandbox {
                 id: "sb-1".to_string(),
@@ -3135,6 +3155,7 @@ mod tests {
                     message: "Pod is Ready".to_string(),
                     last_transition_time: String::new(),
                 })),
+                workspace: "default".to_string(),
             }],
         }))
         .await;
@@ -3176,6 +3197,7 @@ mod tests {
                     }],
                     deleting: false,
                 }),
+                workspace: "default".to_string(),
             }],
             ..Default::default()
         }))
@@ -3214,6 +3236,7 @@ mod tests {
                 SANDBOX_SETTINGS_OBJECT_TYPE,
                 "settings-sb-1",
                 sandbox.object_name(),
+                "",
                 br#"{"revision":1,"settings":{}}"#,
                 None,
             )
@@ -3246,7 +3269,7 @@ mod tests {
         assert!(
             runtime
                 .store
-                .get_by_name(SANDBOX_SETTINGS_OBJECT_TYPE, sandbox.object_name())
+                .get_by_name(SANDBOX_SETTINGS_OBJECT_TYPE, "", sandbox.object_name())
                 .await
                 .unwrap()
                 .is_none()
@@ -3521,7 +3544,12 @@ mod tests {
 
         runtime.validate_sandbox_create(&sandbox).await.unwrap();
         runtime.create_sandbox(sandbox, None).await.unwrap();
-        assert!(runtime.delete_sandbox("uds-sandbox").await.unwrap());
+        assert!(
+            runtime
+                .delete_sandbox("default", "uds-sandbox")
+                .await
+                .unwrap()
+        );
 
         let calls = driver.calls();
         assert_eq!(calls.len(), 4, "unexpected calls: {calls:?}");
@@ -3577,7 +3605,7 @@ mod tests {
             created_at_ms: 1_000_000,
             labels: HashMap::new(),
             resource_version: 0,
-            annotations: HashMap::new(),
+            workspace: "default".to_string(),
         });
 
         let created = runtime.create_sandbox(sandbox, None).await.unwrap();
@@ -3653,7 +3681,7 @@ mod tests {
             .expect("should have one successful creation");
         let retrieved = runtime
             .store
-            .get_message_by_name::<Sandbox>("test-concurrent")
+            .get_message_by_name::<Sandbox>("default", "test-concurrent")
             .await
             .unwrap();
         assert!(
@@ -3665,5 +3693,76 @@ mod tests {
             created_sandbox.object_id(),
             "retrieved sandbox should match created sandbox"
         );
+    }
+
+    #[test]
+    fn driver_sandbox_from_public_populates_workspace() {
+        let sandbox = Sandbox {
+            metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
+                id: "sb-1".to_string(),
+                name: "work".to_string(),
+                workspace: "alpha".to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let driver_sb = driver_sandbox_from_public(&sandbox, "kubernetes").unwrap();
+        assert_eq!(driver_sb.workspace, "alpha");
+        assert_eq!(driver_sb.name, "work");
+        assert_eq!(driver_sb.id, "sb-1");
+    }
+
+    #[tokio::test]
+    async fn apply_sandbox_update_uses_workspace_from_driver() {
+        let runtime = test_runtime(Arc::new(TestDriver::default())).await;
+        runtime
+            .apply_sandbox_update(DriverSandbox {
+                id: "sb-w1".to_string(),
+                name: "work".to_string(),
+                namespace: "default".to_string(),
+                spec: None,
+                status: Some(make_driver_status(make_driver_condition(
+                    "DependenciesNotReady",
+                    "Provisioning",
+                ))),
+                workspace: "team-ml".to_string(),
+            })
+            .await
+            .unwrap();
+
+        let stored = runtime
+            .store
+            .get_message::<Sandbox>("sb-w1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.object_workspace(), "team-ml");
+    }
+
+    #[tokio::test]
+    async fn apply_sandbox_update_defaults_workspace_when_empty() {
+        let runtime = test_runtime(Arc::new(TestDriver::default())).await;
+        runtime
+            .apply_sandbox_update(DriverSandbox {
+                id: "sb-w2".to_string(),
+                name: "work".to_string(),
+                namespace: "default".to_string(),
+                spec: None,
+                status: Some(make_driver_status(make_driver_condition(
+                    "DependenciesNotReady",
+                    "Provisioning",
+                ))),
+                workspace: String::new(),
+            })
+            .await
+            .unwrap();
+
+        let stored = runtime
+            .store
+            .get_message::<Sandbox>("sb-w2")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.object_workspace(), "default");
     }
 }

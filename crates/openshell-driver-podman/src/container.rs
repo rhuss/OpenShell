@@ -42,13 +42,15 @@ pub const LABEL_SANDBOX_ID: &str = "openshell.sandbox-id";
 pub const LABEL_SANDBOX_NAME: &str = "openshell.sandbox-name";
 /// Label key for the sandbox namespace.
 pub const LABEL_SANDBOX_NAMESPACE: &str = "openshell.sandbox-namespace";
+/// Label key for the sandbox workspace.
+pub const LABEL_SANDBOX_WORKSPACE: &str = "openshell.sandbox-workspace";
 /// Label applied to all managed containers.
 pub const LABEL_MANAGED: &str = "openshell.managed";
 /// Label filter string for list/event queries.
 pub const LABEL_MANAGED_FILTER: &str = "openshell.managed=true";
 
 /// Container name prefix to avoid collisions with user containers.
-const CONTAINER_PREFIX: &str = "openshell-sandbox-";
+const CONTAINER_PREFIX: &str = "openshell-";
 
 /// Volume name prefix.
 const VOLUME_PREFIX: &str = "openshell-sandbox-";
@@ -144,10 +146,12 @@ fn default_true() -> bool {
     true
 }
 
-/// Build a Podman container name from the sandbox name.
+/// Build a Podman container name from the sandbox workspace, name, and ID.
+///
+/// Format: `openshell-{workspace}--{name}-{id}`
 #[must_use]
-pub fn container_name(sandbox_name: &str) -> String {
-    format!("{CONTAINER_PREFIX}{sandbox_name}")
+pub fn container_name(workspace: &str, name: &str, id: &str) -> String {
+    format!("{CONTAINER_PREFIX}{workspace}--{name}-{id}")
 }
 
 /// Build the workspace volume name from the sandbox ID.
@@ -464,6 +468,7 @@ fn build_labels(sandbox: &DriverSandbox) -> BTreeMap<String, String> {
     labels.insert(LABEL_SANDBOX_ID.into(), sandbox.id.clone());
     labels.insert(LABEL_SANDBOX_NAME.into(), sandbox.name.clone());
     labels.insert(LABEL_SANDBOX_NAMESPACE.into(), sandbox.namespace.clone());
+    labels.insert(LABEL_SANDBOX_WORKSPACE.into(), sandbox.workspace.clone());
     labels.insert(LABEL_MANAGED.into(), "true".into());
 
     labels
@@ -832,7 +837,7 @@ pub fn build_container_spec_with_token_and_gpu_devices(
     gpu_device_ids: Option<&[String]>,
 ) -> Result<Value, ComputeDriverError> {
     let image = resolve_image(sandbox, config);
-    let name = container_name(&sandbox.name);
+    let name = container_name(&sandbox.workspace, &sandbox.name, &sandbox.id);
     let vol = volume_name(&sandbox.id);
 
     let env = build_env(sandbox, config, image);
@@ -1276,8 +1281,11 @@ mod tests {
     }
 
     #[test]
-    fn container_name_is_prefixed() {
-        assert_eq!(container_name("my-sandbox"), "openshell-sandbox-my-sandbox");
+    fn container_name_is_workspace_qualified() {
+        assert_eq!(
+            container_name("default", "my-sandbox", "abc-123"),
+            "openshell-default--my-sandbox-abc-123"
+        );
     }
 
     #[test]
@@ -1772,6 +1780,7 @@ mod tests {
             namespace: String::new(),
             spec: None,
             status: None,
+            workspace: String::new(),
         }
     }
 

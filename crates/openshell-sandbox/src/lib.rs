@@ -1865,12 +1865,14 @@ async fn load_policy(
 
             // Sync and re-fetch over a single connection to avoid extra
             // TLS handshakes.
+            let ws = snapshot.workspace.clone();
             snapshot = grpc_retry("Policy discovery sync", || {
                 openshell_core::grpc_client::sync_policy_and_fetch_snapshot(
                     endpoint,
                     id,
                     sandbox,
                     &discovered,
+                    &ws,
                 )
             })
             .await?;
@@ -1897,6 +1899,7 @@ async fn load_policy(
                     id,
                     sandbox_name,
                     &sync_policy,
+                    &snapshot.workspace,
                 )
                 .await
                 {
@@ -3008,6 +3011,7 @@ filesystem_policy:
             settings: std::collections::HashMap::new(),
             global_policy_version: 0,
             provider_env_revision: 0,
+            workspace: String::new(),
         }
     }
 
@@ -3158,5 +3162,22 @@ filesystem_policy:
                 PolicyStatusUpdate::loaded(version)
             );
         }
+    }
+
+    #[test]
+    fn settings_snapshot_carries_workspace_for_policy_sync() {
+        let mut snapshot = settings_poll_result(
+            Some(proto_policy_fixture()),
+            1,
+            openshell_core::proto::PolicySource::Sandbox,
+        );
+        snapshot.workspace = "beta".to_string();
+
+        let revision = LoadedPolicyRevision::from_snapshot(&snapshot);
+        assert_eq!(revision.version, 1);
+        assert_eq!(
+            snapshot.workspace, "beta",
+            "workspace must survive the snapshot so sync_policy_and_fetch_snapshot receives it"
+        );
     }
 }

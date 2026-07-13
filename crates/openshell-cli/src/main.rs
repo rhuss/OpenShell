@@ -360,6 +360,16 @@ const PROVIDER_EXAMPLES: &str = "\x1b[1mEXAMPLES\x1b[0m
   $ openshell provider delete openai
 ";
 
+const WORKSPACE_EXAMPLES: &str = "\x1b[1mALIAS\x1b[0m
+  ws
+
+\x1b[1mEXAMPLES\x1b[0m
+  $ openshell workspace create --name staging
+  $ openshell workspace list
+  $ openshell workspace get staging
+  $ openshell workspace delete staging
+";
+
 const GATEWAY_EXAMPLES: &str = "\x1b[1mALIAS\x1b[0m
   gw
 
@@ -421,6 +431,17 @@ struct Cli {
         help_heading = "GATEWAY FLAGS"
     )]
     gateway_insecure: bool,
+
+    /// Workspace scope for resource operations.
+    #[arg(
+        long,
+        global = true,
+        env = "OPENSHELL_WORKSPACE",
+        default_value = "default",
+        help_heading = "GLOBAL FLAGS",
+        add = ArgValueCompleter::new(completers::complete_workspace_names)
+    )]
+    workspace: String,
 
     /// Increase verbosity (-v, -vv, -vvv).
     #[arg(short, long, action = clap::ArgAction::Count, global = true, help_heading = "GLOBAL FLAGS")]
@@ -519,6 +540,13 @@ enum Commands {
     Provider {
         #[command(subcommand)]
         command: Option<ProviderCommands>,
+    },
+
+    /// Manage workspaces.
+    #[command(alias = "ws", after_help = WORKSPACE_EXAMPLES, help_template = SUBCOMMAND_HELP_TEMPLATE)]
+    Workspace {
+        #[command(subcommand)]
+        command: Option<WorkspaceCommands>,
     },
 
     // ===================================================================
@@ -814,6 +842,10 @@ enum ProviderCommands {
         /// Output format.
         #[arg(short = 'o', long = "output", value_enum, default_value_t = OutputFormat::Table, conflicts_with = "names")]
         output: OutputFormat,
+
+        /// List providers across all workspaces.
+        #[arg(long)]
+        all_workspaces: bool,
     },
 
     /// List available provider profiles.
@@ -952,6 +984,10 @@ enum ProviderProfileCommands {
         /// Output format.
         #[arg(short = 'o', long = "output", value_enum, default_value_t = OutputFormat::Yaml)]
         output: OutputFormat,
+
+        /// Target platform-scoped profiles (ignores --workspace).
+        #[arg(long)]
+        global: bool,
     },
 
     /// Import provider profiles from a file or directory.
@@ -964,6 +1000,10 @@ enum ProviderProfileCommands {
         /// Directory containing profile files to import.
         #[arg(long = "from", value_hint = ValueHint::DirPath)]
         from: Option<PathBuf>,
+
+        /// Import as platform-scoped profiles (ignores --workspace).
+        #[arg(long)]
+        global: bool,
     },
 
     /// Update an existing custom provider profile from a file.
@@ -975,6 +1015,10 @@ enum ProviderProfileCommands {
         /// Profile file to update.
         #[arg(short = 'f', long = "file", value_hint = ValueHint::FilePath)]
         file: PathBuf,
+
+        /// Target platform-scoped profile (ignores --workspace).
+        #[arg(long)]
+        global: bool,
     },
 
     /// Validate provider profile files without registering them.
@@ -987,6 +1031,10 @@ enum ProviderProfileCommands {
         /// Directory containing profile files to lint.
         #[arg(long = "from", value_hint = ValueHint::DirPath)]
         from: Option<PathBuf>,
+
+        /// Lint against platform scope (ignores --workspace).
+        #[arg(long)]
+        global: bool,
     },
 
     /// Delete a custom provider profile.
@@ -994,6 +1042,10 @@ enum ProviderProfileCommands {
     Delete {
         /// Provider profile id.
         id: String,
+
+        /// Target platform-scoped profile (ignores --workspace).
+        #[arg(long)]
+        global: bool,
     },
 }
 
@@ -1132,7 +1184,7 @@ enum GatewayCommands {
 
 #[derive(Subcommand, Debug)]
 enum InferenceCommands {
-    /// Set gateway-level inference provider and model.
+    /// Set workspace-level inference provider and model.
     #[command(help_template = LEAF_HELP_TEMPLATE, next_help_heading = "FLAGS")]
     Set {
         /// Provider name.
@@ -1158,7 +1210,7 @@ enum InferenceCommands {
         timeout: u64,
     },
 
-    /// Update gateway-level inference configuration (partial update).
+    /// Update workspace-level inference configuration (partial update).
     #[command(help_template = LEAF_HELP_TEMPLATE, next_help_heading = "FLAGS")]
     Update {
         /// Provider name (unchanged if omitted).
@@ -1182,7 +1234,7 @@ enum InferenceCommands {
         timeout: Option<u64>,
     },
 
-    /// Get gateway-level inference provider and model.
+    /// Get workspace-level inference provider and model.
     #[command(help_template = LEAF_HELP_TEMPLATE, next_help_heading = "FLAGS")]
     Get {
         /// Show the system inference route instead of the user-facing route.
@@ -1385,6 +1437,10 @@ enum SandboxCommands {
         /// Output format.
         #[arg(short = 'o', long = "output", value_enum, default_value_t = OutputFormat::Table, conflicts_with_all = ["ids", "names"])]
         output: OutputFormat,
+
+        /// List sandboxes across all workspaces.
+        #[arg(long)]
+        all_workspaces: bool,
     },
 
     /// Delete a sandbox by name.
@@ -1916,6 +1972,10 @@ enum ServiceCommands {
         /// Number of endpoints to skip.
         #[arg(long, default_value_t = 0)]
         offset: u32,
+
+        /// List services across all workspaces.
+        #[arg(long)]
+        all_workspaces: bool,
     },
 
     /// Show one exposed sandbox service endpoint.
@@ -1938,6 +1998,108 @@ enum ServiceCommands {
 
         /// Service name. Omit for the unnamed endpoint.
         service: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum WorkspaceCommands {
+    /// Create a workspace.
+    #[command(help_template = LEAF_HELP_TEMPLATE, next_help_heading = "FLAGS")]
+    Create {
+        /// Workspace name (DNS-1123 label: lowercase alphanumeric and hyphens, 1-63 chars).
+        #[arg(long)]
+        name: String,
+
+        /// Labels to attach to the workspace (KEY=VALUE).
+        #[arg(long = "label", value_name = "KEY=VALUE")]
+        labels: Vec<String>,
+    },
+
+    /// Fetch a workspace by name.
+    #[command(help_template = LEAF_HELP_TEMPLATE, next_help_heading = "FLAGS")]
+    Get {
+        /// Workspace name.
+        #[arg(add = ArgValueCompleter::new(completers::complete_workspace_names))]
+        name: String,
+    },
+
+    /// List workspaces.
+    #[command(help_template = LEAF_HELP_TEMPLATE, next_help_heading = "FLAGS")]
+    List {
+        /// Maximum number of workspaces to return.
+        #[arg(long, default_value_t = 100)]
+        limit: u32,
+
+        /// Offset into the workspace list.
+        #[arg(long, default_value_t = 0)]
+        offset: u32,
+
+        /// Filter by label selector (e.g. "env=staging").
+        #[arg(long)]
+        label_selector: Option<String>,
+
+        /// Output format.
+        #[arg(short = 'o', long = "output", value_enum, default_value_t = OutputFormat::Table)]
+        output: OutputFormat,
+    },
+
+    /// Delete a workspace.
+    #[command(help_template = LEAF_HELP_TEMPLATE, next_help_heading = "FLAGS")]
+    Delete {
+        /// Workspace name(s) to delete.
+        #[arg(required = true, add = ArgValueCompleter::new(completers::complete_workspace_names))]
+        names: Vec<String>,
+    },
+
+    /// Manage workspace members.
+    #[command(subcommand, help_template = SUBCOMMAND_HELP_TEMPLATE)]
+    Member(WorkspaceMemberCommands),
+}
+
+#[derive(Subcommand, Debug)]
+enum WorkspaceMemberCommands {
+    /// Add a member to a workspace.
+    #[command(help_template = LEAF_HELP_TEMPLATE, next_help_heading = "FLAGS")]
+    Add {
+        /// Workspace name.
+        #[arg(long, add = ArgValueCompleter::new(completers::complete_workspace_names))]
+        workspace: String,
+
+        /// OIDC subject claim identifying the principal.
+        #[arg(long)]
+        subject: String,
+
+        /// Role to assign (user or admin).
+        #[arg(long)]
+        role: String,
+    },
+
+    /// Remove a member from a workspace.
+    #[command(help_template = LEAF_HELP_TEMPLATE, next_help_heading = "FLAGS")]
+    Remove {
+        /// Workspace name.
+        #[arg(long, add = ArgValueCompleter::new(completers::complete_workspace_names))]
+        workspace: String,
+
+        /// OIDC subject claim identifying the principal.
+        #[arg(long)]
+        subject: String,
+    },
+
+    /// List members of a workspace.
+    #[command(help_template = LEAF_HELP_TEMPLATE, next_help_heading = "FLAGS")]
+    List {
+        /// Workspace name.
+        #[arg(long, add = ArgValueCompleter::new(completers::complete_workspace_names))]
+        workspace: String,
+
+        /// Maximum number of members to return.
+        #[arg(long, default_value_t = 100)]
+        limit: u32,
+
+        /// Offset into the member list.
+        #[arg(long, default_value_t = 0)]
+        offset: u32,
     },
 }
 
@@ -2203,6 +2365,7 @@ async fn main() -> Result<()> {
                     &target_host,
                     target_port,
                     &tls,
+                    &cli.workspace,
                 )
                 .await?;
             }
@@ -2216,7 +2379,15 @@ async fn main() -> Result<()> {
                 let mut tls = tls.with_gateway_name(&ctx.name);
                 apply_auth(&mut tls, &ctx.name);
                 let name = resolve_sandbox_name(name, &ctx.name)?;
-                run::sandbox_forward(&ctx.endpoint, &name, &spec, background, &tls).await?;
+                run::sandbox_forward(
+                    &ctx.endpoint,
+                    &name,
+                    &spec,
+                    background,
+                    &tls,
+                    &cli.workspace,
+                )
+                .await?;
                 if background {
                     eprintln!(
                         "{} Forwarding port {} to sandbox {name} in the background",
@@ -2245,24 +2416,42 @@ async fn main() -> Result<()> {
                     target_port,
                 } => {
                     let service = service.unwrap_or_default();
-                    run::service_expose(&ctx.endpoint, &sandbox, &service, target_port, &tls)
-                        .await?;
+                    run::service_expose(
+                        &ctx.endpoint,
+                        &sandbox,
+                        &service,
+                        target_port,
+                        &cli.workspace,
+                        &tls,
+                    )
+                    .await?;
                 }
                 ServiceCommands::List {
                     sandbox,
                     limit,
                     offset,
+                    all_workspaces,
                 } => {
-                    run::service_list(&ctx.endpoint, sandbox.as_deref(), limit, offset, &tls)
-                        .await?;
+                    run::service_list(
+                        &ctx.endpoint,
+                        sandbox.as_deref(),
+                        limit,
+                        offset,
+                        &cli.workspace,
+                        all_workspaces,
+                        &tls,
+                    )
+                    .await?;
                 }
                 ServiceCommands::Get { sandbox, service } => {
                     let service = service.unwrap_or_default();
-                    run::service_get(&ctx.endpoint, &sandbox, &service, &tls).await?;
+                    run::service_get(&ctx.endpoint, &sandbox, &service, &cli.workspace, &tls)
+                        .await?;
                 }
                 ServiceCommands::Delete { sandbox, service } => {
                     let service = service.unwrap_or_default();
-                    run::service_delete(&ctx.endpoint, &sandbox, &service, &tls).await?;
+                    run::service_delete(&ctx.endpoint, &sandbox, &service, &cli.workspace, &tls)
+                        .await?;
                 }
             }
         }
@@ -2289,6 +2478,7 @@ async fn main() -> Result<()> {
                 since.as_deref(),
                 &source,
                 &level,
+                &cli.workspace,
                 &tls,
             )
             .await?;
@@ -2347,13 +2537,22 @@ async fn main() -> Result<()> {
                             yes,
                             wait,
                             timeout,
+                            &cli.workspace,
                             &tls,
                         )
                         .await?;
                     } else {
                         let name = resolve_sandbox_name(name, &ctx.name)?;
-                        run::sandbox_policy_set(&ctx.endpoint, &name, &policy, wait, timeout, &tls)
-                            .await?;
+                        run::sandbox_policy_set(
+                            &ctx.endpoint,
+                            &name,
+                            &policy,
+                            wait,
+                            timeout,
+                            &cli.workspace,
+                            &tls,
+                        )
+                        .await?;
                     }
                 }
                 PolicyCommands::Update {
@@ -2383,6 +2582,7 @@ async fn main() -> Result<()> {
                         dry_run,
                         wait,
                         timeout,
+                        &cli.workspace,
                         &tls,
                     )
                     .await?;
@@ -2402,6 +2602,7 @@ async fn main() -> Result<()> {
                             rev,
                             view,
                             output.as_str(),
+                            &cli.workspace,
                             &tls,
                         )
                         .await?;
@@ -2413,6 +2614,7 @@ async fn main() -> Result<()> {
                             rev,
                             view,
                             output.as_str(),
+                            &cli.workspace,
                             &tls,
                         )
                         .await?;
@@ -2424,10 +2626,12 @@ async fn main() -> Result<()> {
                     global,
                 } => {
                     if global {
-                        run::sandbox_policy_list_global(&ctx.endpoint, limit, &tls).await?;
+                        run::sandbox_policy_list_global(&ctx.endpoint, limit, &cli.workspace, &tls)
+                            .await?;
                     } else {
                         let name = resolve_sandbox_name(name, &ctx.name)?;
-                        run::sandbox_policy_list(&ctx.endpoint, &name, limit, &tls).await?;
+                        run::sandbox_policy_list(&ctx.endpoint, &name, limit, &cli.workspace, &tls)
+                            .await?;
                     }
                 }
                 PolicyCommands::Delete { global, yes } => {
@@ -2436,7 +2640,8 @@ async fn main() -> Result<()> {
                             "sandbox policy delete is not supported; use --global to remove global policy lock"
                         ));
                     }
-                    run::gateway_setting_delete(&ctx.endpoint, "policy", yes, &tls).await?;
+                    run::gateway_setting_delete(&ctx.endpoint, "policy", yes, &cli.workspace, &tls)
+                        .await?;
                 }
                 PolicyCommands::Prove { .. } => unreachable!(),
             }
@@ -2463,7 +2668,8 @@ async fn main() -> Result<()> {
                         run::gateway_settings_get(&ctx.endpoint, json, &tls).await?;
                     } else {
                         let name = resolve_sandbox_name(name, &ctx.name)?;
-                        run::sandbox_settings_get(&ctx.endpoint, &name, json, &tls).await?;
+                        run::sandbox_settings_get(&ctx.endpoint, &name, json, &cli.workspace, &tls)
+                            .await?;
                     }
                 }
                 SettingsCommands::Set {
@@ -2474,10 +2680,26 @@ async fn main() -> Result<()> {
                     yes,
                 } => {
                     if global {
-                        run::gateway_setting_set(&ctx.endpoint, &key, &value, yes, &tls).await?;
+                        run::gateway_setting_set(
+                            &ctx.endpoint,
+                            &key,
+                            &value,
+                            yes,
+                            &cli.workspace,
+                            &tls,
+                        )
+                        .await?;
                     } else {
                         let name = resolve_sandbox_name(name, &ctx.name)?;
-                        run::sandbox_setting_set(&ctx.endpoint, &name, &key, &value, &tls).await?;
+                        run::sandbox_setting_set(
+                            &ctx.endpoint,
+                            &name,
+                            &key,
+                            &value,
+                            &cli.workspace,
+                            &tls,
+                        )
+                        .await?;
                     }
                 }
                 SettingsCommands::Delete {
@@ -2487,10 +2709,18 @@ async fn main() -> Result<()> {
                     yes,
                 } => {
                     if global {
-                        run::gateway_setting_delete(&ctx.endpoint, &key, yes, &tls).await?;
+                        run::gateway_setting_delete(&ctx.endpoint, &key, yes, &cli.workspace, &tls)
+                            .await?;
                     } else {
                         let name = resolve_sandbox_name(name, &ctx.name)?;
-                        run::sandbox_setting_delete(&ctx.endpoint, &name, &key, &tls).await?;
+                        run::sandbox_setting_delete(
+                            &ctx.endpoint,
+                            &name,
+                            &key,
+                            &cli.workspace,
+                            &tls,
+                        )
+                        .await?;
                     }
                 }
             }
@@ -2508,11 +2738,25 @@ async fn main() -> Result<()> {
             match draft_cmd {
                 DraftCommands::Get { name, status } => {
                     let name = resolve_sandbox_name(name, &ctx.name)?;
-                    run::sandbox_draft_get(&ctx.endpoint, &name, status.as_deref(), &tls).await?;
+                    run::sandbox_draft_get(
+                        &ctx.endpoint,
+                        &name,
+                        status.as_deref(),
+                        &cli.workspace,
+                        &tls,
+                    )
+                    .await?;
                 }
                 DraftCommands::Approve { name, chunk_id } => {
                     let name = resolve_sandbox_name(name, &ctx.name)?;
-                    run::sandbox_draft_approve(&ctx.endpoint, &name, &chunk_id, &tls).await?;
+                    run::sandbox_draft_approve(
+                        &ctx.endpoint,
+                        &name,
+                        &chunk_id,
+                        &cli.workspace,
+                        &tls,
+                    )
+                    .await?;
                 }
                 DraftCommands::Reject {
                     name,
@@ -2520,8 +2764,15 @@ async fn main() -> Result<()> {
                     reason,
                 } => {
                     let name = resolve_sandbox_name(name, &ctx.name)?;
-                    run::sandbox_draft_reject(&ctx.endpoint, &name, &chunk_id, &reason, &tls)
-                        .await?;
+                    run::sandbox_draft_reject(
+                        &ctx.endpoint,
+                        &name,
+                        &chunk_id,
+                        &reason,
+                        &cli.workspace,
+                        &tls,
+                    )
+                    .await?;
                 }
                 DraftCommands::ApproveAll {
                     name,
@@ -2532,6 +2783,7 @@ async fn main() -> Result<()> {
                         &ctx.endpoint,
                         &name,
                         include_security_flagged,
+                        &cli.workspace,
                         &tls,
                     )
                     .await?;
@@ -2539,11 +2791,11 @@ async fn main() -> Result<()> {
 
                 DraftCommands::Clear { name } => {
                     let name = resolve_sandbox_name(name, &ctx.name)?;
-                    run::sandbox_draft_clear(&ctx.endpoint, &name, &tls).await?;
+                    run::sandbox_draft_clear(&ctx.endpoint, &name, &cli.workspace, &tls).await?;
                 }
                 DraftCommands::History { name } => {
                     let name = resolve_sandbox_name(name, &ctx.name)?;
-                    run::sandbox_draft_history(&ctx.endpoint, &name, &tls).await?;
+                    run::sandbox_draft_history(&ctx.endpoint, &name, &cli.workspace, &tls).await?;
                 }
             }
         }
@@ -2568,7 +2820,14 @@ async fn main() -> Result<()> {
                 } => {
                     let route_name = if system { "sandbox-system" } else { "" };
                     run::gateway_inference_set(
-                        endpoint, &provider, &model, route_name, no_verify, timeout, &tls,
+                        endpoint,
+                        &provider,
+                        &model,
+                        route_name,
+                        no_verify,
+                        timeout,
+                        &cli.workspace,
+                        &tls,
                     )
                     .await?;
                 }
@@ -2587,13 +2846,14 @@ async fn main() -> Result<()> {
                         route_name,
                         no_verify,
                         timeout,
+                        &cli.workspace,
                         &tls,
                     )
                     .await?;
                 }
                 InferenceCommands::Get { system } => {
                     let route_name = if system { Some("sandbox-system") } else { None };
-                    run::gateway_inference_get(endpoint, route_name, &tls).await?;
+                    run::gateway_inference_get(endpoint, route_name, &cli.workspace, &tls).await?;
                 }
             }
         }
@@ -2714,6 +2974,7 @@ async fn main() -> Result<()> {
                             environment: env_map,
                             approval_mode: &approval_mode,
                         },
+                        &cli.workspace,
                         &tls,
                     ))
                     .await?;
@@ -2747,6 +3008,7 @@ async fn main() -> Result<()> {
                                 local,
                                 sandbox_dest,
                                 &tls,
+                                &cli.workspace,
                             )
                             .await?;
                             eprintln!("{} Upload complete", "✓".green().bold());
@@ -2758,7 +3020,15 @@ async fn main() -> Result<()> {
                             local.display(),
                         );
                     }
-                    run::sandbox_sync_up(&ctx.endpoint, &name, local, sandbox_dest, &tls).await?;
+                    run::sandbox_sync_up(
+                        &ctx.endpoint,
+                        &name,
+                        local,
+                        sandbox_dest,
+                        &tls,
+                        &cli.workspace,
+                    )
+                    .await?;
                     eprintln!("{} Upload complete", "✓".green().bold());
                 }
                 SandboxCommands::Download {
@@ -2771,8 +3041,15 @@ async fn main() -> Result<()> {
                     apply_auth(&mut tls, &ctx.name);
                     let local_dest = dest.as_deref().unwrap_or(".");
                     eprintln!("Downloading sandbox:{sandbox_path} -> {local_dest}");
-                    run::sandbox_sync_down(&ctx.endpoint, &name, &sandbox_path, local_dest, &tls)
-                        .await?;
+                    run::sandbox_sync_down(
+                        &ctx.endpoint,
+                        &name,
+                        &sandbox_path,
+                        local_dest,
+                        &tls,
+                        &cli.workspace,
+                    )
+                    .await?;
                     eprintln!("{} Download complete", "✓".green().bold());
                 }
                 other => {
@@ -2788,7 +3065,8 @@ async fn main() -> Result<()> {
                         }
                         SandboxCommands::Get { name, policy_only } => {
                             let name = resolve_sandbox_name(name, &ctx.name)?;
-                            run::sandbox_get(endpoint, &name, policy_only, &tls).await?;
+                            run::sandbox_get(endpoint, &name, policy_only, &cli.workspace, &tls)
+                                .await?;
                         }
                         SandboxCommands::List {
                             limit,
@@ -2797,6 +3075,7 @@ async fn main() -> Result<()> {
                             names,
                             selector,
                             output,
+                            all_workspaces,
                         } => {
                             run::sandbox_list(
                                 endpoint,
@@ -2806,22 +3085,37 @@ async fn main() -> Result<()> {
                                 names,
                                 selector.as_deref(),
                                 output.as_str(),
+                                &cli.workspace,
+                                all_workspaces,
                                 &tls,
                             )
                             .await?;
                         }
                         SandboxCommands::Delete { names, all } => {
-                            run::sandbox_delete(endpoint, &names, all, &tls, &ctx.name).await?;
+                            run::sandbox_delete(
+                                endpoint,
+                                &names,
+                                all,
+                                &cli.workspace,
+                                &tls,
+                                &ctx.name,
+                            )
+                            .await?;
                         }
                         SandboxCommands::Connect { name, editor } => {
                             let name = resolve_sandbox_name(name, &ctx.name)?;
                             if let Some(editor) = editor.map(Into::into) {
                                 run::sandbox_connect_editor(
-                                    endpoint, &ctx.name, &name, editor, &tls,
+                                    endpoint,
+                                    &ctx.name,
+                                    &name,
+                                    editor,
+                                    &tls,
+                                    &cli.workspace,
                                 )
                                 .await?;
                             } else {
-                                run::sandbox_connect(endpoint, &name, &tls).await?;
+                                run::sandbox_connect(endpoint, &name, &tls, &cli.workspace).await?;
                             }
                             let _ = save_last_sandbox(&ctx.name, &name);
                         }
@@ -2853,6 +3147,7 @@ async fn main() -> Result<()> {
                                 tty_override,
                                 &env_map,
                                 &tls,
+                                &cli.workspace,
                             )
                             .await?;
                             let _ = save_last_sandbox(&ctx.name, &name);
@@ -2862,26 +3157,101 @@ async fn main() -> Result<()> {
                         }
                         SandboxCommands::SshConfig { name } => {
                             let name = resolve_sandbox_name(name, &ctx.name)?;
-                            run::print_ssh_config(&ctx.name, &name);
+                            run::print_ssh_config(&ctx.name, &name, &cli.workspace);
                         }
                         SandboxCommands::Provider(command) => match command {
                             SandboxProviderCommands::List { name } => {
                                 let name = resolve_sandbox_name(name, &ctx.name)?;
-                                run::sandbox_provider_list(endpoint, &name, &tls).await?;
+                                run::sandbox_provider_list(endpoint, &name, &cli.workspace, &tls)
+                                    .await?;
                             }
                             SandboxProviderCommands::Attach { name, provider } => {
-                                run::sandbox_provider_attach(endpoint, &name, &provider, &tls)
-                                    .await?;
+                                run::sandbox_provider_attach(
+                                    endpoint,
+                                    &name,
+                                    &provider,
+                                    &cli.workspace,
+                                    &tls,
+                                )
+                                .await?;
                             }
                             SandboxProviderCommands::Detach { name, provider } => {
-                                run::sandbox_provider_detach(endpoint, &name, &provider, &tls)
-                                    .await?;
+                                run::sandbox_provider_detach(
+                                    endpoint,
+                                    &name,
+                                    &provider,
+                                    &cli.workspace,
+                                    &tls,
+                                )
+                                .await?;
                             }
                         },
                     }
                 }
             }
         }
+
+        // -----------------------------------------------------------
+        // Workspace commands
+        // -----------------------------------------------------------
+        Some(Commands::Workspace {
+            command: Some(command),
+        }) => {
+            let ctx = resolve_gateway(&cli.gateway, &cli.gateway_endpoint)?;
+            let endpoint = &ctx.endpoint;
+            let mut tls = tls.with_gateway_name(&ctx.name);
+            apply_auth(&mut tls, &ctx.name);
+
+            match command {
+                WorkspaceCommands::Create { name, labels } => {
+                    run::workspace_create(endpoint, &name, &labels, &tls).await?;
+                }
+                WorkspaceCommands::Get { name } => {
+                    run::workspace_get(endpoint, &name, &tls).await?;
+                }
+                WorkspaceCommands::List {
+                    limit,
+                    offset,
+                    label_selector,
+                    output,
+                } => {
+                    run::workspace_list(
+                        endpoint,
+                        limit,
+                        offset,
+                        label_selector.as_deref().unwrap_or(""),
+                        output.as_str(),
+                        &tls,
+                    )
+                    .await?;
+                }
+                WorkspaceCommands::Delete { names } => {
+                    run::workspace_delete(endpoint, &names, &tls).await?;
+                }
+                WorkspaceCommands::Member(command) => match command {
+                    WorkspaceMemberCommands::Add {
+                        workspace,
+                        subject,
+                        role,
+                    } => {
+                        run::workspace_member_add(endpoint, &workspace, &subject, &role, &tls)
+                            .await?;
+                    }
+                    WorkspaceMemberCommands::Remove { workspace, subject } => {
+                        run::workspace_member_remove(endpoint, &workspace, &subject, &tls).await?;
+                    }
+                    WorkspaceMemberCommands::List {
+                        workspace,
+                        limit,
+                        offset,
+                    } => {
+                        run::workspace_member_list(endpoint, &workspace, limit, offset, &tls)
+                            .await?;
+                    }
+                },
+            }
+        }
+
         Some(Commands::Provider {
             command: Some(command),
         }) => {
@@ -2909,6 +3279,7 @@ async fn main() -> Result<()> {
                         from_gcloud_adc,
                         runtime_credentials,
                         &config,
+                        &cli.workspace,
                         &tls,
                     )
                     .await?;
@@ -2922,6 +3293,7 @@ async fn main() -> Result<()> {
                             endpoint,
                             &name,
                             credential_key.as_deref(),
+                            &cli.workspace,
                             &tls,
                         )
                         .await?;
@@ -2946,6 +3318,7 @@ async fn main() -> Result<()> {
                                 secret_material_keys: &secret_material_keys,
                                 credential_expires_at_ms: credential_expires_at,
                             },
+                            &cli.workspace,
                             &tls,
                         )
                         .await?;
@@ -2954,60 +3327,110 @@ async fn main() -> Result<()> {
                         name,
                         credential_key,
                     } => {
-                        run::provider_rotate(endpoint, &name, &credential_key, &tls).await?;
+                        run::provider_rotate(
+                            endpoint,
+                            &name,
+                            &credential_key,
+                            &cli.workspace,
+                            &tls,
+                        )
+                        .await?;
                     }
                     ProviderRefreshCommands::Delete {
                         name,
                         credential_key,
                     } => {
-                        run::provider_refresh_delete(endpoint, &name, &credential_key, &tls)
-                            .await?;
+                        run::provider_refresh_delete(
+                            endpoint,
+                            &name,
+                            &credential_key,
+                            &cli.workspace,
+                            &tls,
+                        )
+                        .await?;
                     }
                 },
                 ProviderCommands::Get { name } => {
-                    run::provider_get(endpoint, &name, &tls).await?;
+                    run::provider_get(endpoint, &name, &cli.workspace, &tls).await?;
                 }
                 ProviderCommands::List {
                     limit,
                     offset,
                     names,
                     output,
+                    all_workspaces,
                 } => {
-                    run::provider_list(endpoint, limit, offset, names, output.as_str(), &tls)
-                        .await?;
+                    run::provider_list(
+                        endpoint,
+                        limit,
+                        offset,
+                        names,
+                        output.as_str(),
+                        &cli.workspace,
+                        all_workspaces,
+                        &tls,
+                    )
+                    .await?;
                 }
                 ProviderCommands::ListProfiles { output } => {
-                    run::provider_list_profiles(endpoint, output.as_str(), &tls).await?;
+                    run::provider_list_profiles(endpoint, output.as_str(), &cli.workspace, &tls)
+                        .await?;
                 }
-                ProviderCommands::Profile(command) => match command {
-                    ProviderProfileCommands::Export { id, output } => {
-                        run::provider_profile_export(endpoint, &id, output.as_str(), &tls).await?;
+                ProviderCommands::Profile(command) => {
+                    let profile_workspace =
+                        |global: bool| -> &str { if global { "" } else { &cli.workspace } };
+                    match command {
+                        ProviderProfileCommands::Export { id, output, global } => {
+                            run::provider_profile_export(
+                                endpoint,
+                                &id,
+                                output.as_str(),
+                                profile_workspace(global),
+                                &tls,
+                            )
+                            .await?;
+                        }
+                        ProviderProfileCommands::Import { file, from, global } => {
+                            run::provider_profile_import(
+                                endpoint,
+                                file.as_deref(),
+                                from.as_deref(),
+                                profile_workspace(global),
+                                &tls,
+                            )
+                            .await?;
+                        }
+                        ProviderProfileCommands::Update { id, file, global } => {
+                            run::provider_profile_update(
+                                endpoint,
+                                &id,
+                                &file,
+                                profile_workspace(global),
+                                &tls,
+                            )
+                            .await?;
+                        }
+                        ProviderProfileCommands::Lint { file, from, global } => {
+                            run::provider_profile_lint(
+                                endpoint,
+                                file.as_deref(),
+                                from.as_deref(),
+                                profile_workspace(global),
+                                &tls,
+                            )
+                            .await?;
+                        }
+                        ProviderProfileCommands::Delete { id, global } => {
+                            run::provider_profile_delete(
+                                endpoint,
+                                &id,
+                                profile_workspace(global),
+                                &tls,
+                            )
+                            .await?;
+                        }
                     }
-                    ProviderProfileCommands::Import { file, from } => {
-                        run::provider_profile_import(
-                            endpoint,
-                            file.as_deref(),
-                            from.as_deref(),
-                            &tls,
-                        )
-                        .await?;
-                    }
-                    ProviderProfileCommands::Update { id, file } => {
-                        run::provider_profile_update(endpoint, &id, &file, &tls).await?;
-                    }
-                    ProviderProfileCommands::Lint { file, from } => {
-                        run::provider_profile_lint(
-                            endpoint,
-                            file.as_deref(),
-                            from.as_deref(),
-                            &tls,
-                        )
-                        .await?;
-                    }
-                    ProviderProfileCommands::Delete { id } => {
-                        run::provider_profile_delete(endpoint, &id, &tls).await?;
-                    }
-                },
+                }
                 ProviderCommands::Update {
                     name,
                     from_existing,
@@ -3022,12 +3445,13 @@ async fn main() -> Result<()> {
                         &credentials,
                         &config,
                         &credential_expires_at,
+                        &cli.workspace,
                         &tls,
                     )
                     .await?;
                 }
                 ProviderCommands::Delete { names } => {
-                    run::provider_delete(endpoint, &names, &tls).await?;
+                    run::provider_delete(endpoint, &names, &cli.workspace, &tls).await?;
                 }
             }
         }
@@ -3090,11 +3514,11 @@ async fn main() -> Result<()> {
                     };
                     let mut tls = tls.with_gateway_name(&g);
                     apply_auth(&mut tls, &g);
-                    run::sandbox_ssh_proxy_by_name(&endpoint, &n, &tls).await?;
+                    run::sandbox_ssh_proxy_by_name(&endpoint, &n, &tls, &cli.workspace).await?;
                 }
                 // Legacy name mode with --server only (no --gateway-name).
                 (_, _, _, Some(srv), None, Some(n)) => {
-                    run::sandbox_ssh_proxy_by_name(&srv, &n, &tls).await?;
+                    run::sandbox_ssh_proxy_by_name(&srv, &n, &tls, &cli.workspace).await?;
                 }
                 _ => {
                     return Err(miette::miette!(
@@ -3137,6 +3561,13 @@ async fn main() -> Result<()> {
             Cli::command()
                 .find_subcommand_mut("settings")
                 .expect("settings subcommand exists")
+                .print_help()
+                .expect("Failed to print help");
+        }
+        Some(Commands::Workspace { command: None }) => {
+            Cli::command()
+                .find_subcommand_mut("workspace")
+                .expect("workspace subcommand exists")
                 .print_help()
                 .expect("Failed to print help");
         }
@@ -3850,7 +4281,8 @@ mod tests {
             Some(Commands::Provider {
                 command: Some(ProviderCommands::Profile(ProviderProfileCommands::Export {
                     id,
-                    output: OutputFormat::Yaml
+                    output: OutputFormat::Yaml,
+                    ..
                 }))
             }) if id == "custom-api"
         ));
@@ -3889,7 +4321,8 @@ mod tests {
             Some(Commands::Provider {
                 command: Some(ProviderCommands::Profile(ProviderProfileCommands::Update {
                     id,
-                    file: _
+                    file: _,
+                    ..
                 }))
             }) if id == "custom-api"
         ));
@@ -3901,7 +4334,8 @@ mod tests {
             delete.command,
             Some(Commands::Provider {
                 command: Some(ProviderCommands::Profile(ProviderProfileCommands::Delete {
-                    id
+                    id,
+                    ..
                 }))
             }) if id == "custom-api"
         ));
@@ -4853,6 +5287,7 @@ mod tests {
                         sandbox,
                         limit,
                         offset,
+                        ..
                     }),
             }) => {
                 assert_eq!(sandbox.as_deref(), Some("my-sandbox"));
@@ -4872,6 +5307,7 @@ mod tests {
                         sandbox,
                         limit,
                         offset,
+                        ..
                     }),
             }) => {
                 assert_eq!(sandbox, None);

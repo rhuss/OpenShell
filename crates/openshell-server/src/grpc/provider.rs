@@ -70,17 +70,7 @@ impl ProviderEnvironment {
 #[cfg(test)]
 pub(super) async fn create_provider_record(
     store: &Store,
-    provider: Provider,
-) -> Result<Provider, Status> {
-    let catalog = ProviderProfileSources::with_default_sources()
-        .snapshot_catalog(store)
-        .await?;
-    create_provider_record_with_catalog(store, &catalog, provider).await
-}
-
-pub(super) async fn create_provider_record_with_catalog(
-    store: &Store,
-    catalog: &EffectiveProviderProfileCatalog,
+    workspace: &str,
     mut provider: Provider,
 ) -> Result<Provider, Status> {
     use crate::persistence::{ObjectName, current_time_ms};
@@ -94,7 +84,7 @@ pub(super) async fn create_provider_record_with_catalog(
             created_at_ms: now_ms,
             labels: std::collections::HashMap::new(),
             resource_version: 0,
-            annotations: std::collections::HashMap::new(),
+            workspace: workspace.to_string(),
         });
     }
 
@@ -115,7 +105,7 @@ pub(super) async fn create_provider_record_with_catalog(
         return Err(Status::invalid_argument("provider.type is required"));
     }
     if provider.credentials.is_empty()
-        && !provider_type_allows_empty_credentials(catalog, &provider.r#type)
+        && !provider_type_allows_empty_credentials(store, workspace, &provider.r#type).await?
     {
         return Err(Status::invalid_argument(
             "provider.credentials must not be empty",
@@ -138,6 +128,7 @@ pub(super) async fn create_provider_record_with_catalog(
             Provider::object_type(),
             &provider_id,
             provider.object_name(),
+            workspace,
             &provider.encode_to_vec(),
             None,
             WriteCondition::MustCreate,
@@ -161,13 +152,17 @@ pub(super) async fn create_provider_record_with_catalog(
     Ok(redact_provider_credentials(provider))
 }
 
-pub(super) async fn get_provider_record(store: &Store, name: &str) -> Result<Provider, Status> {
+pub(super) async fn get_provider_record(
+    store: &Store,
+    workspace: &str,
+    name: &str,
+) -> Result<Provider, Status> {
     if name.is_empty() {
         return Err(Status::invalid_argument("name is required"));
     }
 
     store
-        .get_message_by_name::<Provider>(name)
+        .get_message_by_name::<Provider>(workspace, name)
         .await
         .map_err(|e| Status::internal(format!("fetch provider failed: {e}")))?
         .ok_or_else(|| Status::not_found("provider not found"))
@@ -176,11 +171,12 @@ pub(super) async fn get_provider_record(store: &Store, name: &str) -> Result<Pro
 
 pub(super) async fn list_provider_records(
     store: &Store,
+    workspace: &str,
     limit: u32,
     offset: u32,
 ) -> Result<Vec<Provider>, Status> {
     let providers: Vec<Provider> = store
-        .list_messages(limit, offset)
+        .list_messages(workspace, limit, offset)
         .await
         .map_err(|e| Status::internal(format!("list providers failed: {e}")))?;
 
@@ -193,6 +189,7 @@ pub(super) async fn list_provider_records(
 #[cfg(test)]
 pub(super) async fn update_provider_record(
     store: &Store,
+    workspace: &str,
     provider: Provider,
 ) -> Result<Provider, Status> {
     let catalog = ProviderProfileSources::with_default_sources()
@@ -217,7 +214,7 @@ pub(super) async fn update_provider_record_with_catalog(
 
     // Resolve provider ID from name for CAS update
     let existing = store
-        .get_message_by_name::<Provider>(provider.object_name())
+        .get_message_by_name::<Provider>(workspace, provider.object_name())
         .await
         .map_err(|e| Status::internal(format!("fetch provider failed: {e}")))?;
 
@@ -259,8 +256,7 @@ pub(super) async fn update_provider_record_with_catalog(
     // #1347.
     super::validation::validate_object_metadata(candidate.metadata.as_ref(), "provider")?;
     validate_provider_mutable_fields(&candidate)?;
-    validate_provider_update_against_attached_sandboxes_with_catalog(store, catalog, &candidate)
-        .await?;
+    validate_provider_update_against_attached_sandboxes(store, workspace, &candidate).await?;
 
     // Serialize labels for storage
     let labels_map = candidate.object_labels();
@@ -282,6 +278,7 @@ pub(super) async fn update_provider_record_with_catalog(
             Provider::object_type(),
             candidate.object_id(),
             candidate.object_name(),
+            workspace,
             &candidate.encode_to_vec(),
             labels_json.as_deref(),
             WriteCondition::MatchResourceVersion(cas_version),
@@ -311,20 +308,24 @@ pub(super) async fn update_provider_record_with_catalog(
     Ok(redact_provider_credentials(candidate))
 }
 
-pub(super) async fn delete_provider_record(store: &Store, name: &str) -> Result<bool, Status> {
+pub(super) async fn delete_provider_record(
+    store: &Store,
+    workspace: &str,
+    name: &str,
+) -> Result<bool, Status> {
     if name.is_empty() {
         return Err(Status::invalid_argument("name is required"));
     }
 
     let Some(provider) = store
-        .get_message_by_name::<Provider>(name)
+        .get_message_by_name::<Provider>(workspace, name)
         .await
         .map_err(|e| Status::internal(format!("fetch provider failed: {e}")))?
     else {
         return Ok(false);
     };
 
-    let blocking_sandboxes = sandboxes_using_provider(store, name).await?;
+    let blocking_sandboxes = sandboxes_using_provider(store, workspace, name).await?;
     if !blocking_sandboxes.is_empty() {
         return Err(Status::failed_precondition(format!(
             "provider '{name}' is attached to sandbox(es): {}",
@@ -336,7 +337,7 @@ pub(super) async fn delete_provider_record(store: &Store, name: &str) -> Result<
         .await?;
 
     store
-        .delete_by_name(Provider::object_type(), name)
+        .delete_by_name(Provider::object_type(), workspace, name)
         .await
         .map_err(|e| Status::internal(format!("delete provider failed: {e}")))
 }
@@ -346,7 +347,7 @@ pub(super) async fn delete_provider_record(store: &Store, name: &str) -> Result<
 /// value in the output, `None` skips it.
 ///
 /// This is the shared pagination kernel used by all sandbox-scan helpers.
-async fn scan_sandboxes<T, F>(store: &Store, mut f: F) -> Result<Vec<T>, Status>
+async fn scan_sandboxes<T, F>(store: &Store, workspace: &str, mut f: F) -> Result<Vec<T>, Status>
 where
     F: FnMut(Sandbox) -> Option<T>,
 {
@@ -354,7 +355,7 @@ where
     let mut offset = 0u32;
     loop {
         let records = store
-            .list(Sandbox::object_type(), 1000, offset)
+            .list(Sandbox::object_type(), workspace, 1000, offset)
             .await
             .map_err(|e| Status::internal(format!("list sandboxes failed: {e}")))?;
         if records.is_empty() {
@@ -379,10 +380,11 @@ where
 
 async fn sandboxes_using_provider(
     store: &Store,
+    workspace: &str,
     provider_name: &str,
 ) -> Result<Vec<String>, Status> {
     let provider_name = provider_name.to_string();
-    let mut names = scan_sandboxes(store, |sandbox| {
+    let mut names = scan_sandboxes(store, workspace, |sandbox| {
         let spec = sandbox.spec.as_ref()?;
         if spec.providers.iter().any(|n| n == &provider_name) {
             Some(sandbox.object_name().to_string())
@@ -398,10 +400,11 @@ async fn sandboxes_using_provider(
 
 async fn sandboxes_using_provider_records(
     store: &Store,
+    workspace: &str,
     provider_name: &str,
 ) -> Result<Vec<Sandbox>, Status> {
     let provider_name = provider_name.to_string();
-    scan_sandboxes(store, |sandbox| {
+    scan_sandboxes(store, workspace, |sandbox| {
         let spec = sandbox.spec.as_ref()?;
         if spec.providers.iter().any(|n| n == &provider_name) {
             Some(sandbox)
@@ -464,6 +467,7 @@ fn merge_i64_map(
 #[cfg(test)]
 pub(super) async fn resolve_provider_environment(
     store: &Store,
+    workspace: &str,
     provider_names: &[String],
 ) -> Result<ProviderEnvironment, Status> {
     let catalog = ProviderProfileSources::with_default_sources()
@@ -484,13 +488,13 @@ pub(super) async fn resolve_provider_environment_with_catalog(
     let mut env = std::collections::HashMap::new();
     let mut expires = std::collections::HashMap::new();
     let now_ms = crate::persistence::current_time_ms();
-    validate_provider_environment_keys_unique_at(store, catalog, provider_names, None, now_ms)
+    validate_provider_environment_keys_unique_at(store, workspace, provider_names, None, now_ms)
         .await?;
     let registry = openshell_providers::ProviderRegistry::new();
 
     for name in provider_names {
         let provider = store
-            .get_message_by_name::<Provider>(name)
+            .get_message_by_name::<Provider>(workspace, name)
             .await
             .map_err(|e| Status::internal(format!("failed to fetch provider '{name}': {e}")))?
             .ok_or_else(|| Status::failed_precondition(format!("provider '{name}' not found")))?;
@@ -538,12 +542,7 @@ pub(super) async fn resolve_provider_environment_with_catalog(
     Ok(ProviderEnvironment {
         environment: env,
         credential_expires_at_ms: expires,
-        dynamic_credentials: resolve_dynamic_credentials_with_catalog(
-            store,
-            catalog,
-            provider_names,
-        )
-        .await?,
+        dynamic_credentials: resolve_dynamic_credentials(store, workspace, provider_names).await?,
     })
 }
 
@@ -554,7 +553,7 @@ pub(super) async fn resolve_provider_environment_with_catalog(
 /// host, port, endpoint path, and provider credential identity.
 pub(super) async fn resolve_dynamic_credentials_with_catalog(
     store: &Store,
-    catalog: &EffectiveProviderProfileCatalog,
+    workspace: &str,
     provider_names: &[String],
 ) -> Result<std::collections::HashMap<String, ProviderProfileCredential>, Status> {
     if provider_names.is_empty() {
@@ -565,7 +564,7 @@ pub(super) async fn resolve_dynamic_credentials_with_catalog(
 
     for provider_name in provider_names {
         let provider = store
-            .get_message_by_name::<Provider>(provider_name)
+            .get_message_by_name::<Provider>(workspace, provider_name)
             .await
             .map_err(|e| {
                 Status::internal(format!("failed to fetch provider '{provider_name}': {e}"))
@@ -576,7 +575,7 @@ pub(super) async fn resolve_dynamic_credentials_with_catalog(
 
         let profile_id =
             normalize_provider_type(&provider.r#type).unwrap_or(provider.r#type.as_str());
-        let Some(profile) = get_provider_type_profile_with_catalog(catalog, profile_id) else {
+        let Some(profile) = get_provider_type_profile(store, workspace, profile_id).await? else {
             continue;
         };
 
@@ -865,6 +864,7 @@ fn endpoint_path_matches(pattern: &str, path: &str) -> bool {
 
 pub async fn validate_provider_environment_keys_unique(
     store: &Store,
+    workspace: &str,
     provider_names: &[String],
 ) -> Result<(), Status> {
     let catalog = ProviderProfileSources::with_default_sources()
@@ -880,7 +880,7 @@ pub async fn validate_provider_environment_keys_unique_with_catalog(
 ) -> Result<(), Status> {
     validate_provider_environment_keys_unique_at(
         store,
-        catalog,
+        workspace,
         provider_names,
         None,
         crate::persistence::current_time_ms(),
@@ -890,7 +890,7 @@ pub async fn validate_provider_environment_keys_unique_with_catalog(
 
 pub async fn validate_provider_credential_key_available_for_attached_sandboxes_with_catalog(
     store: &Store,
-    catalog: &EffectiveProviderProfileCatalog,
+    workspace: &str,
     provider: &Provider,
     credential_key: &str,
 ) -> Result<(), Status> {
@@ -900,12 +900,12 @@ pub async fn validate_provider_credential_key_available_for_attached_sandboxes_w
         .entry(credential_key.to_string())
         .or_insert_with(|| "pending".to_string());
     candidate.credential_expires_at_ms.remove(credential_key);
-    validate_provider_update_against_attached_sandboxes_with_catalog(store, catalog, &candidate)
-        .await
+    validate_provider_update_against_attached_sandboxes(store, workspace, &candidate).await
 }
 
 pub async fn validate_provider_update_against_attached_sandboxes(
     store: &Store,
+    workspace: &str,
     provider: &Provider,
 ) -> Result<(), Status> {
     let catalog = ProviderProfileSources::with_default_sources()
@@ -921,14 +921,14 @@ pub async fn validate_provider_update_against_attached_sandboxes_with_catalog(
     provider: &Provider,
 ) -> Result<(), Status> {
     let provider_name = provider.object_name().to_string();
-    for sandbox in sandboxes_using_provider_records(store, &provider_name).await? {
+    for sandbox in sandboxes_using_provider_records(store, workspace, &provider_name).await? {
         let sandbox_name = sandbox.object_name().to_string();
         let Some(spec) = sandbox.spec.as_ref() else {
             continue;
         };
         validate_provider_environment_keys_unique_at(
             store,
-            catalog,
+            workspace,
             &spec.providers,
             Some(provider),
             crate::persistence::current_time_ms(),
@@ -946,7 +946,7 @@ pub async fn validate_provider_update_against_attached_sandboxes_with_catalog(
 
 async fn validate_provider_environment_keys_unique_at(
     store: &Store,
-    catalog: &EffectiveProviderProfileCatalog,
+    workspace: &str,
     provider_names: &[String],
     candidate_provider: Option<&Provider>,
     now_ms: i64,
@@ -957,7 +957,7 @@ async fn validate_provider_environment_keys_unique_at(
         let provider = match candidate_provider {
             Some(candidate) if candidate.object_name() == name.as_str() => candidate.clone(),
             _ => store
-                .get_message_by_name::<Provider>(name)
+                .get_message_by_name::<Provider>(workspace, name)
                 .await
                 .map_err(|e| Status::internal(format!("failed to fetch provider '{name}': {e}")))?
                 .ok_or_else(|| {
@@ -976,9 +976,8 @@ async fn validate_provider_environment_keys_unique_at(
                 seen.insert(key, provider_name.clone());
             }
         }
-        dynamic_bindings.extend(dynamic_token_grant_bindings_for_provider_with_catalog(
-            catalog, &provider,
-        ));
+        dynamic_bindings
+            .extend(dynamic_token_grant_bindings_for_provider(store, workspace, &provider).await?);
     }
     validate_dynamic_token_grant_bindings_unambiguous(&dynamic_bindings)?;
     Ok(())
@@ -994,14 +993,15 @@ struct DynamicTokenGrantBinding {
     score: u32,
 }
 
-fn dynamic_token_grant_bindings_for_provider_with_catalog(
-    catalog: &EffectiveProviderProfileCatalog,
+async fn dynamic_token_grant_bindings_for_provider(
+    store: &Store,
+    workspace: &str,
     provider: &Provider,
 ) -> Vec<DynamicTokenGrantBinding> {
     let provider_name = provider.object_name().to_string();
     let profile_id = normalize_provider_type(&provider.r#type).unwrap_or(provider.r#type.as_str());
-    let Some(profile) = get_provider_type_profile_with_catalog(catalog, profile_id) else {
-        return Vec::new();
+    let Some(profile) = get_provider_type_profile(store, workspace, profile_id).await? else {
+        return Ok(Vec::new());
     };
     dynamic_token_grant_bindings_for_profile(&provider_name, &profile.to_proto())
 }
@@ -1228,7 +1228,9 @@ pub(super) async fn handle_create_provider(
     request: Request<CreateProviderRequest>,
 ) -> Result<Response<ProviderResponse>, Status> {
     let req = request.into_inner();
-    let Some(provider) = req.provider else {
+    let workspace =
+        super::workspace::resolve_workspace(state.store.as_ref(), &req.workspace).await?;
+    let Some(mut provider) = req.provider else {
         emit_provider_lifecycle(
             "custom",
             LifecycleOperation::Create,
@@ -1236,13 +1238,11 @@ pub(super) async fn handle_create_provider(
         );
         return Err(Status::invalid_argument("provider is required"));
     };
+    if let Some(metadata) = provider.metadata.as_mut() {
+        metadata.workspace.clone_from(&workspace);
+    }
     let provider_type = provider.r#type.clone();
-    let catalog = state
-        .provider_profile_sources
-        .snapshot_catalog(state.store.as_ref())
-        .await?;
-    let result =
-        create_provider_record_with_catalog(state.store.as_ref(), &catalog, provider).await;
+    let result = create_provider_record(state.store.as_ref(), &workspace, provider).await;
     match result {
         Ok(provider) => {
             emit_provider_lifecycle(
@@ -1269,8 +1269,10 @@ pub(super) async fn handle_get_provider(
     state: &Arc<ServerState>,
     request: Request<GetProviderRequest>,
 ) -> Result<Response<ProviderResponse>, Status> {
-    let name = request.into_inner().name;
-    let provider = get_provider_record(state.store.as_ref(), &name).await?;
+    let req = request.into_inner();
+    let workspace =
+        super::workspace::resolve_workspace(state.store.as_ref(), &req.workspace).await?;
+    let provider = get_provider_record(state.store.as_ref(), &workspace, &req.name).await?;
 
     Ok(Response::new(ProviderResponse {
         provider: Some(provider),
@@ -1282,8 +1284,25 @@ pub(super) async fn handle_list_providers(
     request: Request<ListProvidersRequest>,
 ) -> Result<Response<ListProvidersResponse>, Status> {
     let request = request.into_inner();
+    if request.all_workspaces && !request.workspace.is_empty() {
+        return Err(Status::invalid_argument(
+            "all_workspaces and workspace are mutually exclusive",
+        ));
+    }
     let limit = clamp_limit(request.limit, 100, MAX_PAGE_SIZE);
-    let providers = list_provider_records(state.store.as_ref(), limit, request.offset).await?;
+
+    let providers = if request.all_workspaces {
+        let all: Vec<Provider> = state
+            .store
+            .list_all_messages(limit, request.offset)
+            .await
+            .map_err(|e| Status::internal(format!("list providers failed: {e}")))?;
+        all.into_iter().map(redact_provider_credentials).collect()
+    } else {
+        let workspace =
+            super::workspace::resolve_workspace(state.store.as_ref(), &request.workspace).await?;
+        list_provider_records(state.store.as_ref(), &workspace, limit, request.offset).await?
+    };
 
     Ok(Response::new(ListProvidersResponse { providers }))
 }
@@ -1293,14 +1312,13 @@ pub(super) async fn handle_list_provider_profiles(
     request: Request<ListProviderProfilesRequest>,
 ) -> Result<Response<ListProviderProfilesResponse>, Status> {
     let request = request.into_inner();
+    let workspace =
+        super::workspace::resolve_workspace(state.store.as_ref(), &request.workspace).await?;
     let limit = clamp_limit(request.limit, 100, MAX_PAGE_SIZE) as usize;
     let offset = request.offset as usize;
-    let catalog = state
-        .provider_profile_sources
-        .snapshot_catalog(state.store.as_ref())
-        .await?;
-    let profiles = catalog
-        .list_profiles()
+    let mut profiles = merged_provider_profiles(state.store.as_ref(), &workspace).await?;
+    profiles.sort_by(|left, right| left.id.cmp(&right.id));
+    let profiles = profiles
         .into_iter()
         .skip(offset)
         .take(limit)
@@ -1313,15 +1331,15 @@ pub(super) async fn handle_get_provider_profile(
     state: &Arc<ServerState>,
     request: Request<GetProviderProfileRequest>,
 ) -> Result<Response<ProviderProfileResponse>, Status> {
-    let id = request.into_inner().id;
+    let req = request.into_inner();
+    let workspace =
+        super::workspace::resolve_workspace(state.store.as_ref(), &req.workspace).await?;
+    let id = req.id;
     let id = normalize_profile_id_request(&id)?;
-    let catalog = state
-        .provider_profile_sources
-        .snapshot_catalog(state.store.as_ref())
-        .await?;
-    let profile = catalog
-        .get_profile(&id)
-        .ok_or_else(|| Status::not_found("provider profile not found"))?;
+    let profile = get_provider_type_profile(state.store.as_ref(), &workspace, &id)
+        .await?
+        .ok_or_else(|| Status::not_found("provider profile not found"))?
+        .to_proto();
 
     Ok(Response::new(ProviderProfileResponse {
         profile: Some(profile),
@@ -1333,21 +1351,19 @@ pub(super) async fn handle_import_provider_profiles(
     request: Request<ImportProviderProfilesRequest>,
 ) -> Result<Response<ImportProviderProfilesResponse>, Status> {
     let request = request.into_inner();
+    let workspace =
+        super::workspace::resolve_workspace(state.store.as_ref(), &request.workspace).await?;
     let (profiles, mut diagnostics) = profiles_from_import_items(&request.profiles);
     add_empty_profile_set_diagnostic(&profiles, &mut diagnostics);
     let _sandbox_sync_guard = state.compute.sandbox_sync_guard().await;
-    let catalog = state
-        .provider_profile_sources
-        .snapshot_catalog(state.store.as_ref())
-        .await?;
     diagnostics
-        .extend(profile_conflict_diagnostics(state.store.as_ref(), &catalog, &profiles).await?);
+        .extend(profile_conflict_diagnostics(state.store.as_ref(), &workspace, &profiles).await?);
     diagnostics.extend(validate_profile_set(&profiles));
     if !has_errors(&diagnostics) {
         diagnostics.extend(
             profile_attached_sandbox_diagnostics(
                 state.store.as_ref(),
-                &catalog,
+                &workspace,
                 &profiles,
                 "import",
             )
@@ -1365,13 +1381,14 @@ pub(super) async fn handle_import_provider_profiles(
 
     let mut imported = Vec::with_capacity(profiles.len());
     for (_, profile) in profiles {
-        let mut stored = stored_provider_profile(profile.to_proto());
+        let mut stored = stored_provider_profile_for_workspace(profile.to_proto(), &workspace);
         let result = state
             .store
             .put_if(
                 StoredProviderProfile::object_type(),
                 stored.object_id(),
                 stored.object_name(),
+                &workspace,
                 &stored.encode_to_vec(),
                 None,
                 WriteCondition::MustCreate,
@@ -1400,6 +1417,8 @@ pub(super) async fn handle_update_provider_profiles(
     request: Request<UpdateProviderProfilesRequest>,
 ) -> Result<Response<UpdateProviderProfilesResponse>, Status> {
     let request = request.into_inner();
+    let workspace =
+        super::workspace::resolve_workspace(state.store.as_ref(), &request.workspace).await?;
     let items = request.profile.into_iter().collect::<Vec<_>>();
     let (profiles, mut diagnostics) = profiles_from_import_items(&items);
     add_empty_profile_set_diagnostic(&profiles, &mut diagnostics);
@@ -1410,7 +1429,7 @@ pub(super) async fn handle_update_provider_profiles(
         .snapshot_catalog(state.store.as_ref())
         .await?;
     diagnostics.extend(
-        profile_update_target_diagnostics(state.store.as_ref(), &catalog, &profiles, &target_id)
+        profile_update_target_diagnostics(state.store.as_ref(), &workspace, &profiles, &target_id)
             .await?,
     );
     diagnostics.extend(validate_profile_set(&profiles));
@@ -1436,7 +1455,7 @@ pub(super) async fn handle_update_provider_profiles(
         diagnostics.extend(
             profile_attached_sandbox_diagnostics(
                 state.store.as_ref(),
-                &catalog,
+                &workspace,
                 &profiles,
                 "update",
             )
@@ -1459,7 +1478,7 @@ pub(super) async fn handle_update_provider_profiles(
         .ok_or_else(|| Status::internal("validated provider profile update is missing"))?;
     let mut stored = state
         .store
-        .get_message_by_name::<StoredProviderProfile>(&target_id)
+        .get_message_by_name::<StoredProviderProfile>(&workspace, &target_id)
         .await
         .map_err(|e| Status::internal(format!("fetch provider profile failed: {e}")))?
         .ok_or_else(|| Status::not_found("provider profile not found"))?;
@@ -1488,6 +1507,7 @@ pub(super) async fn handle_update_provider_profiles(
             StoredProviderProfile::object_type(),
             stored.object_id(),
             stored.object_name(),
+            &workspace,
             &stored.encode_to_vec(),
             labels_json.as_deref(),
             WriteCondition::MatchResourceVersion(expected_resource_version),
@@ -1514,12 +1534,7 @@ pub(super) async fn handle_lint_provider_profiles(
     let request = request.into_inner();
     let (profiles, mut diagnostics) = profiles_from_import_items(&request.profiles);
     add_empty_profile_set_diagnostic(&profiles, &mut diagnostics);
-    let catalog = state
-        .provider_profile_sources
-        .snapshot_catalog(state.store.as_ref())
-        .await?;
-    diagnostics
-        .extend(profile_conflict_diagnostics(state.store.as_ref(), &catalog, &profiles).await?);
+    diagnostics.extend(profile_conflict_diagnostics(state.store.as_ref(), "", &profiles).await?);
     diagnostics.extend(validate_profile_set(&profiles));
     let valid = !has_errors(&diagnostics);
 
@@ -1533,7 +1548,10 @@ pub(super) async fn handle_delete_provider_profile(
     state: &Arc<ServerState>,
     request: Request<DeleteProviderProfileRequest>,
 ) -> Result<Response<DeleteProviderProfileResponse>, Status> {
-    let id = request.into_inner().id;
+    let req = request.into_inner();
+    let workspace =
+        super::workspace::resolve_workspace(state.store.as_ref(), &req.workspace).await?;
+    let id = req.id;
     let id = normalize_profile_id_request(&id)?;
     let _sandbox_sync_guard = state.compute.sandbox_sync_guard().await;
     let catalog = state
@@ -1548,14 +1566,14 @@ pub(super) async fn handle_delete_provider_profile(
 
     let existing = state
         .store
-        .get_message_by_name::<StoredProviderProfile>(&id)
+        .get_message_by_name::<StoredProviderProfile>(&workspace, &id)
         .await
         .map_err(|e| Status::internal(format!("fetch provider profile failed: {e}")))?;
     if existing.is_none() {
         return Err(Status::not_found("provider profile not found"));
     }
 
-    let blocking_sandboxes = sandboxes_using_profile(state.store.as_ref(), &id).await?;
+    let blocking_sandboxes = sandboxes_using_profile(state.store.as_ref(), &workspace, &id).await?;
     if !blocking_sandboxes.is_empty() {
         return Err(Status::failed_precondition(format!(
             "provider profile '{id}' is in use by sandboxes: {}",
@@ -1565,27 +1583,50 @@ pub(super) async fn handle_delete_provider_profile(
 
     let deleted = state
         .store
-        .delete_by_name(StoredProviderProfile::object_type(), &id)
+        .delete_by_name(StoredProviderProfile::object_type(), &workspace, &id)
         .await
         .map_err(|e| Status::internal(format!("delete provider profile failed: {e}")))?;
 
     Ok(Response::new(DeleteProviderProfileResponse { deleted }))
 }
 
-pub(super) fn get_provider_type_profile_with_catalog(
-    catalog: &EffectiveProviderProfileCatalog,
+pub(super) async fn get_provider_type_profile(
+    store: &Store,
+    workspace: &str,
     id: &str,
-) -> Option<ProviderTypeProfile> {
-    catalog.get_type_profile(id)
+) -> Result<Option<ProviderTypeProfile>, Status> {
+    let Some(id) = normalize_profile_id(id) else {
+        return Ok(None);
+    };
+    if let Some(profile) = get_default_profile(&id) {
+        return Ok(Some(profile.clone()));
+    }
+    let profile = store
+        .get_message_by_name::<StoredProviderProfile>(workspace, &id)
+        .await
+        .map_err(|e| Status::internal(format!("fetch provider profile failed: {e}")))?
+        .and_then(|stored| {
+            let resource_version = stored_profile_resource_version(&stored);
+            stored.profile.map(|profile| {
+                ProviderTypeProfile::from_proto(&profile_response_payload(
+                    profile,
+                    resource_version,
+                ))
+            })
+        });
+    Ok(profile)
 }
 
-fn provider_refresh_defaults(
-    catalog: &EffectiveProviderProfileCatalog,
+async fn provider_refresh_defaults(
+    store: &Store,
+    workspace: &str,
     provider: &Provider,
     credential_key: &str,
-) -> Option<CredentialRefreshProfile> {
-    let profile = get_provider_type_profile_with_catalog(catalog, &provider.r#type)?;
-    profile
+) -> Result<Option<CredentialRefreshProfile>, Status> {
+    let Some(profile) = get_provider_type_profile(store, workspace, &provider.r#type).await? else {
+        return Ok(None);
+    };
+    Ok(profile
         .credentials
         .iter()
         .find(|credential| {
@@ -1623,14 +1664,48 @@ fn validate_refresh_material(
     Ok(())
 }
 
-fn provider_type_allows_empty_credentials(
-    catalog: &EffectiveProviderProfileCatalog,
+async fn provider_type_allows_empty_credentials(
+    store: &Store,
+    workspace: &str,
     provider_type: &str,
-) -> bool {
-    let Some(profile) = get_provider_type_profile_with_catalog(catalog, provider_type) else {
-        return false;
+) -> Result<bool, Status> {
+    let Some(profile) = get_provider_type_profile(store, workspace, provider_type).await? else {
+        return Ok(false);
     };
-    profile.allows_empty_provider_credentials()
+    Ok(profile.allows_empty_provider_credentials())
+}
+
+async fn merged_provider_profiles(
+    store: &Store,
+    workspace: &str,
+) -> Result<Vec<ProviderTypeProfile>, Status> {
+    let mut profiles = default_profiles().to_vec();
+    profiles.extend(
+        custom_provider_profiles(store, workspace)
+            .await?
+            .into_iter()
+            .filter_map(|stored| {
+                let resource_version = stored_profile_resource_version(&stored);
+                stored.profile.map(|profile| {
+                    ProviderTypeProfile::from_proto(&profile_response_payload(
+                        profile,
+                        resource_version,
+                    ))
+                })
+            }),
+    );
+    Ok(profiles)
+}
+
+async fn custom_provider_profiles(
+    store: &Store,
+    workspace: &str,
+) -> Result<Vec<StoredProviderProfile>, Status> {
+    let profiles: Vec<StoredProviderProfile> = store
+        .list_messages(workspace, 10_000, 0)
+        .await
+        .map_err(|e| Status::internal(format!("list provider profiles failed: {e}")))?;
+    Ok(profiles)
 }
 
 fn normalize_profile_id_request(id: &str) -> Result<String, Status> {
@@ -1684,7 +1759,7 @@ fn add_empty_profile_set_diagnostic(
 
 async fn profile_conflict_diagnostics(
     store: &Store,
-    catalog: &EffectiveProviderProfileCatalog,
+    workspace: &str,
     profiles: &[(String, ProviderTypeProfile)],
 ) -> Result<Vec<ProfileValidationDiagnostic>, Status> {
     let mut diagnostics = Vec::new();
@@ -1705,7 +1780,7 @@ async fn profile_conflict_diagnostics(
             continue;
         }
         if store
-            .get_message_by_name::<StoredProviderProfile>(&id)
+            .get_message_by_name::<StoredProviderProfile>(workspace, &id)
             .await
             .map_err(|e| Status::internal(format!("fetch provider profile failed: {e}")))?
             .is_some()
@@ -1724,7 +1799,7 @@ async fn profile_conflict_diagnostics(
 
 async fn profile_update_target_diagnostics(
     store: &Store,
-    catalog: &EffectiveProviderProfileCatalog,
+    workspace: &str,
     profiles: &[(String, ProviderTypeProfile)],
     target_id: &str,
 ) -> Result<Vec<ProfileValidationDiagnostic>, Status> {
@@ -1758,7 +1833,7 @@ async fn profile_update_target_diagnostics(
         return Ok(diagnostics);
     }
     if store
-        .get_message_by_name::<StoredProviderProfile>(target_id)
+        .get_message_by_name::<StoredProviderProfile>(workspace, target_id)
         .await
         .map_err(|e| Status::internal(format!("fetch provider profile failed: {e}")))?
         .is_none()
@@ -1792,7 +1867,7 @@ async fn profile_update_target_diagnostics(
 
 async fn profile_attached_sandbox_diagnostics(
     store: &Store,
-    catalog: &EffectiveProviderProfileCatalog,
+    workspace: &str,
     profiles: &[(String, ProviderTypeProfile)],
     operation: &str,
 ) -> Result<Vec<ProfileValidationDiagnostic>, Status> {
@@ -1808,7 +1883,7 @@ async fn profile_attached_sandbox_diagnostics(
         return Ok(Vec::new());
     }
 
-    let sandboxes = scan_sandboxes(store, |sandbox| {
+    let sandboxes = scan_sandboxes(store, workspace, |sandbox| {
         sandbox
             .spec
             .as_ref()
@@ -1825,7 +1900,7 @@ async fn profile_attached_sandbox_diagnostics(
 
         for provider_name in &spec.providers {
             let Some(provider) = store
-                .get_message_by_name::<Provider>(provider_name)
+                .get_message_by_name::<Provider>(workspace, provider_name)
                 .await
                 .map_err(|e| Status::internal(format!("fetch provider failed: {e}")))?
             else {
@@ -1843,9 +1918,9 @@ async fn profile_attached_sandbox_diagnostics(
                     imported_profiles_used.push(used);
                 }
             } else {
-                bindings.extend(dynamic_token_grant_bindings_for_provider_with_catalog(
-                    catalog, &provider,
-                ));
+                bindings.extend(
+                    dynamic_token_grant_bindings_for_provider(store, workspace, &provider).await?,
+                );
             }
         }
 
@@ -1871,6 +1946,51 @@ async fn profile_attached_sandbox_diagnostics(
     Ok(diagnostics)
 }
 
+fn stored_provider_profile_for_workspace(
+    profile: ProviderProfile,
+    workspace: &str,
+) -> StoredProviderProfile {
+    use crate::persistence::current_time_ms;
+    let now_ms = current_time_ms();
+    let profile = profile_storage_payload(profile);
+    StoredProviderProfile {
+        metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: profile.id.clone(),
+            created_at_ms: now_ms,
+            labels: std::collections::HashMap::new(),
+            resource_version: 0,
+            workspace: workspace.to_string(),
+        }),
+        profile: Some(profile),
+    }
+}
+
+#[cfg(test)]
+fn stored_provider_profile(profile: ProviderProfile) -> StoredProviderProfile {
+    stored_provider_profile_for_workspace(profile, "default")
+}
+
+fn profile_storage_payload(mut profile: ProviderProfile) -> ProviderProfile {
+    profile.resource_version = 0;
+    profile
+}
+
+fn profile_response_payload(
+    mut profile: ProviderProfile,
+    resource_version: u64,
+) -> ProviderProfile {
+    profile.resource_version = resource_version;
+    profile
+}
+
+fn stored_profile_resource_version(stored: &StoredProviderProfile) -> u64 {
+    stored
+        .metadata
+        .as_ref()
+        .map_or(0, |metadata| metadata.resource_version)
+}
+
 fn proto_diagnostic(diagnostic: ProfileValidationDiagnostic) -> ProviderProfileDiagnostic {
     ProviderProfileDiagnostic {
         source: diagnostic.source,
@@ -1887,10 +2007,14 @@ fn has_errors(diagnostics: &[ProfileValidationDiagnostic]) -> bool {
         .any(|diagnostic| diagnostic.severity == "error")
 }
 
-async fn sandboxes_using_profile(store: &Store, profile_id: &str) -> Result<Vec<String>, Status> {
+async fn sandboxes_using_profile(
+    store: &Store,
+    workspace: &str,
+    profile_id: &str,
+) -> Result<Vec<String>, Status> {
     // Collect all sandboxes that reference at least one provider — pagination
     // is handled by `scan_sandboxes`; the async provider lookup happens below.
-    let candidates = scan_sandboxes(store, |sandbox| {
+    let candidates = scan_sandboxes(store, workspace, |sandbox| {
         let has_providers = sandbox
             .spec
             .as_ref()
@@ -1904,7 +2028,7 @@ async fn sandboxes_using_profile(store: &Store, profile_id: &str) -> Result<Vec<
         let spec = sandbox.spec.as_ref().expect("filtered by scan_sandboxes");
         for provider_name in &spec.providers {
             let Some(provider) = store
-                .get_message_by_name::<Provider>(provider_name)
+                .get_message_by_name::<Provider>(workspace, provider_name)
                 .await
                 .map_err(|e| Status::internal(format!("fetch provider failed: {e}")))?
             else {
@@ -1926,6 +2050,8 @@ pub(super) async fn handle_update_provider(
     request: Request<UpdateProviderRequest>,
 ) -> Result<Response<ProviderResponse>, Status> {
     let req = request.into_inner();
+    let workspace =
+        super::workspace::resolve_workspace(state.store.as_ref(), &req.workspace).await?;
     let Some(mut provider) = req.provider else {
         emit_provider_lifecycle(
             "custom",
@@ -1938,12 +2064,7 @@ pub(super) async fn handle_update_provider(
     provider
         .credential_expires_at_ms
         .extend(req.credential_expires_at_ms);
-    let catalog = state
-        .provider_profile_sources
-        .snapshot_catalog(state.store.as_ref())
-        .await?;
-    let result =
-        update_provider_record_with_catalog(state.store.as_ref(), &catalog, provider).await;
+    let result = update_provider_record(state.store.as_ref(), &workspace, provider).await;
     match result {
         Ok(provider) => {
             emit_provider_lifecycle(
@@ -1971,12 +2092,14 @@ pub(super) async fn handle_get_provider_refresh_status(
     request: Request<GetProviderRefreshStatusRequest>,
 ) -> Result<Response<GetProviderRefreshStatusResponse>, Status> {
     let request = request.into_inner();
+    let workspace =
+        super::workspace::resolve_workspace(state.store.as_ref(), &request.workspace).await?;
     if request.provider.trim().is_empty() {
         return Err(Status::invalid_argument("provider is required"));
     }
     let provider = state
         .store
-        .get_message_by_name::<Provider>(&request.provider)
+        .get_message_by_name::<Provider>(&workspace, &request.provider)
         .await
         .map_err(|e| Status::internal(format!("fetch provider failed: {e}")))?
         .ok_or_else(|| Status::not_found("provider not found"))?;
@@ -1990,6 +2113,7 @@ pub(super) async fn handle_get_provider_refresh_status(
     } else {
         crate::provider_refresh::get_refresh_state(
             state.store.as_ref(),
+            &workspace,
             provider.object_id(),
             request.credential_key.trim(),
         )
@@ -2011,6 +2135,8 @@ pub(super) async fn handle_configure_provider_refresh(
     request: Request<ConfigureProviderRefreshRequest>,
 ) -> Result<Response<ConfigureProviderRefreshResponse>, Status> {
     let request = request.into_inner();
+    let workspace =
+        super::workspace::resolve_workspace(state.store.as_ref(), &request.workspace).await?;
     let provider_name = request.provider.trim();
     let credential_key = request.credential_key.trim();
     if provider_name.is_empty() {
@@ -2093,7 +2219,7 @@ pub(super) async fn handle_configure_provider_refresh(
 
     let provider = state
         .store
-        .get_message_by_name::<Provider>(provider_name)
+        .get_message_by_name::<Provider>(&workspace, provider_name)
         .await
         .map_err(|e| Status::internal(format!("fetch provider failed: {e}")))?
         .ok_or_else(|| Status::not_found("provider not found"))?;
@@ -2103,12 +2229,14 @@ pub(super) async fn handle_configure_provider_refresh(
         .await?;
     validate_provider_credential_key_available_for_attached_sandboxes_with_catalog(
         state.store.as_ref(),
-        &catalog,
+        &workspace,
         &provider,
         credential_key,
     )
     .await?;
-    let refresh_defaults = provider_refresh_defaults(&catalog, &provider, credential_key);
+    let refresh_defaults =
+        provider_refresh_defaults(state.store.as_ref(), &workspace, &provider, credential_key)
+            .await?;
     validate_refresh_material(&request.material, refresh_defaults.as_ref())?;
     let material_scopes = crate::provider_refresh::material_scopes(&request.material);
     let token_url = refresh_defaults
@@ -2151,6 +2279,7 @@ pub(super) async fn handle_configure_provider_refresh(
     }
     let existing_refresh_state = crate::provider_refresh::get_refresh_state(
         state.store.as_ref(),
+        &workspace,
         provider.object_id(),
         credential_key,
     )
@@ -2163,6 +2292,7 @@ pub(super) async fn handle_configure_provider_refresh(
     });
     let mut state_record = crate::provider_refresh::new_refresh_state(
         &provider,
+        &workspace,
         credential_key,
         crate::provider_refresh::NewRefreshStateConfig {
             strategy,
@@ -2189,7 +2319,7 @@ pub(super) async fn handle_configure_provider_refresh(
                 created_at_ms: 0,
                 labels: std::collections::HashMap::new(),
                 resource_version: 0,
-                annotations: std::collections::HashMap::new(),
+                workspace: String::new(),
             }),
             r#type: String::new(),
             credentials: std::collections::HashMap::new(),
@@ -2199,7 +2329,7 @@ pub(super) async fn handle_configure_provider_refresh(
                 expires_at_ms,
             )]),
         };
-        update_provider_record_with_catalog(state.store.as_ref(), &catalog, updated).await?;
+        update_provider_record(state.store.as_ref(), &workspace, updated).await?;
     }
 
     Ok(Response::new(ConfigureProviderRefreshResponse {
@@ -2214,6 +2344,8 @@ pub(super) async fn handle_rotate_provider_credential(
     request: Request<RotateProviderCredentialRequest>,
 ) -> Result<Response<RotateProviderCredentialResponse>, Status> {
     let request = request.into_inner();
+    let workspace =
+        super::workspace::resolve_workspace(state.store.as_ref(), &request.workspace).await?;
     let provider_name = request.provider.trim();
     let credential_key = request.credential_key.trim();
     if provider_name.is_empty() {
@@ -2224,6 +2356,7 @@ pub(super) async fn handle_rotate_provider_credential(
     }
     let refresh_state = crate::provider_refresh::refresh_provider_credential(
         state.store.as_ref(),
+        &workspace,
         provider_name,
         credential_key,
     )
@@ -2241,6 +2374,8 @@ pub(super) async fn handle_delete_provider_refresh(
     request: Request<DeleteProviderRefreshRequest>,
 ) -> Result<Response<DeleteProviderRefreshResponse>, Status> {
     let request = request.into_inner();
+    let workspace =
+        super::workspace::resolve_workspace(state.store.as_ref(), &request.workspace).await?;
     let provider_name = request.provider.trim();
     let credential_key = request.credential_key.trim();
     if provider_name.is_empty() {
@@ -2251,18 +2386,20 @@ pub(super) async fn handle_delete_provider_refresh(
     }
     let provider = state
         .store
-        .get_message_by_name::<Provider>(provider_name)
+        .get_message_by_name::<Provider>(&workspace, provider_name)
         .await
         .map_err(|e| Status::internal(format!("fetch provider failed: {e}")))?
         .ok_or_else(|| Status::not_found("provider not found"))?;
     let existing_refresh_state = crate::provider_refresh::get_refresh_state(
         state.store.as_ref(),
+        &workspace,
         provider.object_id(),
         credential_key,
     )
     .await?;
     let deleted_refresh_state = crate::provider_refresh::delete_refresh_state(
         state.store.as_ref(),
+        &workspace,
         provider.object_id(),
         credential_key,
     )
@@ -2289,7 +2426,7 @@ pub(super) async fn handle_delete_provider_refresh(
                 created_at_ms: 0,
                 labels: std::collections::HashMap::new(),
                 resource_version: 0,
-                annotations: std::collections::HashMap::new(),
+                workspace: String::new(),
             }),
             r#type: String::new(),
             credentials: std::collections::HashMap::new(),
@@ -2299,7 +2436,7 @@ pub(super) async fn handle_delete_provider_refresh(
                 0,
             )]),
         };
-        update_provider_record_with_catalog(state.store.as_ref(), &catalog, updated).await?;
+        update_provider_record(state.store.as_ref(), &workspace, updated).await?;
     }
 
     Ok(Response::new(DeleteProviderRefreshResponse {
@@ -2311,9 +2448,12 @@ pub(super) async fn handle_delete_provider(
     state: &Arc<ServerState>,
     request: Request<DeleteProviderRequest>,
 ) -> Result<Response<DeleteProviderResponse>, Status> {
-    let name = request.into_inner().name;
-    let provider_profile = provider_profile_for_name(state.store.as_ref(), &name).await;
-    let result = delete_provider_record(state.store.as_ref(), &name).await;
+    let req = request.into_inner();
+    let workspace =
+        super::workspace::resolve_workspace(state.store.as_ref(), &req.workspace).await?;
+    let name = req.name;
+    let provider_profile = provider_profile_for_name(state.store.as_ref(), &workspace, &name).await;
+    let result = delete_provider_record(state.store.as_ref(), &workspace, &name).await;
     match result {
         Ok(deleted) => {
             let outcome = TelemetryOutcome::from_success(deleted);
@@ -2352,9 +2492,13 @@ fn emit_provider_profile_lifecycle(
     openshell_core::telemetry::emit_provider_lifecycle(operation, outcome, provider_profile);
 }
 
-async fn provider_profile_for_name(store: &Store, name: &str) -> Option<TelemetryProviderProfile> {
+async fn provider_profile_for_name(
+    store: &Store,
+    workspace: &str,
+    name: &str,
+) -> Option<TelemetryProviderProfile> {
     store
-        .get_message_by_name::<Provider>(name)
+        .get_message_by_name::<Provider>(workspace, name)
         .await
         .ok()
         .flatten()
@@ -2556,6 +2700,7 @@ mod tests {
                     profile: Some(profile),
                     source: format!("{id}.yaml"),
                 }],
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -2569,6 +2714,7 @@ mod tests {
     ) -> Provider {
         create_provider_record(
             store,
+            "default",
             Provider {
                 metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
                     id: String::new(),
@@ -2576,7 +2722,7 @@ mod tests {
                     created_at_ms: 1_000_000,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 r#type: provider_type.to_string(),
                 credentials: HashMap::new(),
@@ -2599,6 +2745,7 @@ mod tests {
 
         let err = validate_provider_environment_keys_unique(
             store,
+            "default",
             &["provider-a".to_string(), "provider-b".to_string()],
         )
         .await
@@ -2627,6 +2774,7 @@ mod tests {
 
         validate_provider_environment_keys_unique(
             store,
+            "default",
             &["provider-default".to_string(), "provider-admin".to_string()],
         )
         .await
@@ -2642,6 +2790,7 @@ mod tests {
         create_empty_token_grant_provider(store, "provider-existing", "grant-existing").await;
         create_provider_record(
             store,
+            "default",
             provider_with_values("provider-candidate", "grant-new"),
         )
         .await
@@ -2654,7 +2803,7 @@ mod tests {
                     created_at_ms: 0,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 spec: Some(SandboxSpec {
                     providers: vec![
@@ -2684,6 +2833,7 @@ mod tests {
                     profile: Some(profile),
                     source: "grant-new.yaml".to_string(),
                 }],
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -2711,6 +2861,7 @@ mod tests {
                         profile: Some(custom_profile("guarded-import")),
                         source: "guarded-import.yaml".to_string(),
                     }],
+                    workspace: "default".to_string(),
                 }),
             )
             .await
@@ -2743,7 +2894,7 @@ mod tests {
         state.store.put_message(&stored).await.unwrap();
         let before: StoredProviderProfile = state
             .store
-            .get_message_by_name("custom-api")
+            .get_message_by_name("default", "custom-api")
             .await
             .unwrap()
             .unwrap();
@@ -2765,6 +2916,7 @@ mod tests {
                 }),
                 expected_resource_version: 0,
                 id: "custom-api".to_string(),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -2779,7 +2931,7 @@ mod tests {
         );
         let after: StoredProviderProfile = state
             .store
-            .get_message_by_name("custom-api")
+            .get_message_by_name("default", "custom-api")
             .await
             .unwrap()
             .unwrap();
@@ -2809,6 +2961,7 @@ mod tests {
                 }),
                 expected_resource_version: 0,
                 id: "github".to_string(),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -2830,6 +2983,7 @@ mod tests {
                 }),
                 expected_resource_version: 0,
                 id: "missing-custom".to_string(),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -2861,6 +3015,7 @@ mod tests {
                 }),
                 expected_resource_version: 0,
                 id: "custom-api".to_string(),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -2883,6 +3038,7 @@ mod tests {
                 }),
                 expected_resource_version: 0,
                 id: "custom-api".to_string(),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -2910,7 +3066,7 @@ mod tests {
             .unwrap();
         let profile_a_version = state
             .store
-            .get_message_by_name::<StoredProviderProfile>("profile-a")
+            .get_message_by_name::<StoredProviderProfile>("default", "profile-a")
             .await
             .unwrap()
             .unwrap()
@@ -2931,6 +3087,7 @@ mod tests {
                 }),
                 expected_resource_version: 0,
                 id: "profile-a".to_string(),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -2946,7 +3103,7 @@ mod tests {
         }));
         let stored_b: StoredProviderProfile = state
             .store
-            .get_message_by_name("profile-b")
+            .get_message_by_name("default", "profile-b")
             .await
             .unwrap()
             .unwrap();
@@ -2970,7 +3127,7 @@ mod tests {
                     created_at_ms: 0,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 spec: Some(SandboxSpec {
                     providers: vec![
@@ -2986,7 +3143,7 @@ mod tests {
 
         let mut profile = custom_profile("grant-updated");
         profile.resource_version = store
-            .get_message_by_name::<StoredProviderProfile>("grant-updated")
+            .get_message_by_name::<StoredProviderProfile>("default", "grant-updated")
             .await
             .unwrap()
             .unwrap()
@@ -3011,6 +3168,7 @@ mod tests {
                 }),
                 expected_resource_version: 0,
                 id: "grant-updated".to_string(),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -3033,7 +3191,7 @@ mod tests {
                 created_at_ms: 0,
                 labels: HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             r#type: provider_type.to_string(),
             credentials: [
@@ -3124,6 +3282,7 @@ mod tests {
                     profile: Some(profile),
                     source: format!("{id}.yaml"),
                 }],
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -3183,6 +3342,7 @@ mod tests {
             Request::new(ListProviderProfilesRequest {
                 limit: 100,
                 offset: 0,
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -3229,6 +3389,7 @@ mod tests {
             &state,
             Request::new(GetProviderProfileRequest {
                 id: "github".to_string(),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -3246,6 +3407,7 @@ mod tests {
             &state,
             Request::new(GetProviderProfileRequest {
                 id: "generic".to_string(),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -3263,6 +3425,7 @@ mod tests {
                     profile: Some(custom_profile("custom-api")),
                     source: "custom-api.yaml".to_string(),
                 }],
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -3277,6 +3440,7 @@ mod tests {
             Request::new(ListProviderProfilesRequest {
                 limit: 100,
                 offset: 0,
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -3293,6 +3457,7 @@ mod tests {
             &state,
             Request::new(GetProviderProfileRequest {
                 id: "custom-api".to_string(),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -3313,6 +3478,7 @@ mod tests {
                     profile: Some(custom_profile("github")),
                     source: "github.yaml".to_string(),
                 }],
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -3340,6 +3506,7 @@ mod tests {
                     profile: Some(custom_profile("custom-llm")),
                     source: "custom-llm.yaml".to_string(),
                 }],
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -3353,6 +3520,7 @@ mod tests {
             &state,
             Request::new(GetProviderProfileRequest {
                 id: "custom-llm".to_string(),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -3383,6 +3551,7 @@ mod tests {
                         source: "case.yaml".to_string(),
                     },
                 ],
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -3410,6 +3579,7 @@ mod tests {
                     profile: Some(custom_profile("alex-api")),
                     source: "alex-api.yaml".to_string(),
                 }],
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -3419,6 +3589,7 @@ mod tests {
             &state,
             Request::new(GetProviderProfileRequest {
                 id: " Alex-API ".to_string(),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -3432,6 +3603,7 @@ mod tests {
             &state,
             Request::new(DeleteProviderProfileRequest {
                 id: " Alex-API ".to_string(),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -3460,6 +3632,7 @@ mod tests {
                         source: "bulk-two.yaml".to_string(),
                     },
                 ],
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -3477,7 +3650,10 @@ mod tests {
         for id in ["bulk-one", "bulk-two"] {
             let missing = handle_get_provider_profile(
                 &state,
-                Request::new(GetProviderProfileRequest { id: id.to_string() }),
+                Request::new(GetProviderProfileRequest {
+                    id: id.to_string(),
+                    workspace: "default".to_string(),
+                }),
             )
             .await
             .unwrap_err();
@@ -3526,6 +3702,7 @@ mod tests {
                     }),
                     source: "advanced-api.yaml".to_string(),
                 }],
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -3538,6 +3715,7 @@ mod tests {
             &state,
             Request::new(GetProviderProfileRequest {
                 id: "advanced-api".to_string(),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -3581,6 +3759,7 @@ mod tests {
                         source: "lint-two.yaml".to_string(),
                     },
                 ],
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -3597,7 +3776,10 @@ mod tests {
         for id in ["lint-one", "lint-two"] {
             let missing = handle_get_provider_profile(
                 &state,
-                Request::new(GetProviderProfileRequest { id: id.to_string() }),
+                Request::new(GetProviderProfileRequest {
+                    id: id.to_string(),
+                    workspace: "default".to_string(),
+                }),
             )
             .await
             .unwrap_err();
@@ -3615,6 +3797,7 @@ mod tests {
                     profile: Some(custom_profile("custom-api")),
                     source: "custom-api.yaml".to_string(),
                 }],
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -3624,6 +3807,7 @@ mod tests {
             &state,
             Request::new(DeleteProviderProfileRequest {
                 id: "github".to_string(),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -3632,6 +3816,7 @@ mod tests {
 
         create_provider_record(
             state.store.as_ref(),
+            "default",
             provider_with_values("custom-provider", "custom-api"),
         )
         .await
@@ -3645,7 +3830,7 @@ mod tests {
                     created_at_ms: 0,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 spec: Some(SandboxSpec {
                     providers: vec!["custom-provider".to_string()],
@@ -3660,6 +3845,7 @@ mod tests {
             &state,
             Request::new(DeleteProviderProfileRequest {
                 id: "custom-api".to_string(),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -3674,6 +3860,7 @@ mod tests {
         import_test_graph_refresh_profile(&state).await;
         create_provider_record(
             state.store.as_ref(),
+            "default",
             Provider {
                 metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
                     id: String::new(),
@@ -3681,7 +3868,7 @@ mod tests {
                     created_at_ms: 0,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 r#type: TEST_GRAPH_PROVIDER_TYPE.to_string(),
                 credentials: std::iter::once((
@@ -3710,6 +3897,7 @@ mod tests {
                 ]),
                 secret_material_keys: vec!["client_secret".to_string()],
                 expires_at_ms: Some(expires_at_ms),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -3724,6 +3912,7 @@ mod tests {
             Request::new(GetProviderRefreshStatusRequest {
                 provider: "msgraph".to_string(),
                 credential_key: "MS_GRAPH_ACCESS_TOKEN".to_string(),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -3734,7 +3923,7 @@ mod tests {
 
         let provider = state
             .store
-            .get_message_by_name::<Provider>("msgraph")
+            .get_message_by_name::<Provider>("default", "msgraph")
             .await
             .unwrap()
             .expect("provider");
@@ -3750,6 +3939,7 @@ mod tests {
             Request::new(DeleteProviderRefreshRequest {
                 provider: "msgraph".to_string(),
                 credential_key: "MS_GRAPH_ACCESS_TOKEN".to_string(),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -3762,6 +3952,7 @@ mod tests {
             Request::new(GetProviderRefreshStatusRequest {
                 provider: "msgraph".to_string(),
                 credential_key: "MS_GRAPH_ACCESS_TOKEN".to_string(),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -3771,7 +3962,7 @@ mod tests {
 
         let provider_after_delete = state
             .store
-            .get_message_by_name::<Provider>("msgraph")
+            .get_message_by_name::<Provider>("default", "msgraph")
             .await
             .unwrap()
             .expect("provider");
@@ -3920,6 +4111,7 @@ mod tests {
         let state = test_server_state().await;
         create_provider_record(
             state.store.as_ref(),
+            "default",
             Provider {
                 metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
                     id: String::new(),
@@ -3927,7 +4119,7 @@ mod tests {
                     created_at_ms: 0,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 r#type: "google-vertex-ai".to_string(),
                 credentials: std::iter::once((
@@ -3960,6 +4152,7 @@ mod tests {
                 ]),
                 secret_material_keys: vec!["private_key".to_string()],
                 expires_at_ms: None,
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -3984,6 +4177,7 @@ mod tests {
         import_test_graph_refresh_profile(&state).await;
         create_provider_record(
             state.store.as_ref(),
+            "default",
             Provider {
                 metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
                     id: String::new(),
@@ -3991,7 +4185,7 @@ mod tests {
                     created_at_ms: 0,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 r#type: TEST_GRAPH_PROVIDER_TYPE.to_string(),
                 credentials: std::iter::once((
@@ -4020,6 +4214,7 @@ mod tests {
                 ]),
                 secret_material_keys: vec!["client_secret".to_string()],
                 expires_at_ms: Some(refresh_expires_at_ms),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -4028,6 +4223,7 @@ mod tests {
         let manual_expires_at_ms = refresh_expires_at_ms + 60_000;
         update_provider_record(
             state.store.as_ref(),
+            "default",
             Provider {
                 metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
                     id: String::new(),
@@ -4035,7 +4231,7 @@ mod tests {
                     created_at_ms: 0,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 r#type: String::new(),
                 credentials: HashMap::new(),
@@ -4054,6 +4250,7 @@ mod tests {
             Request::new(DeleteProviderRefreshRequest {
                 provider: "msgraph".to_string(),
                 credential_key: "MS_GRAPH_ACCESS_TOKEN".to_string(),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -4063,7 +4260,7 @@ mod tests {
 
         let provider_after_delete = state
             .store
-            .get_message_by_name::<Provider>("msgraph")
+            .get_message_by_name::<Provider>("default", "msgraph")
             .await
             .unwrap()
             .expect("provider");
@@ -4081,6 +4278,7 @@ mod tests {
         import_test_graph_refresh_profile(&state).await;
         create_provider_record(
             state.store.as_ref(),
+            "default",
             Provider {
                 metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
                     id: String::new(),
@@ -4088,7 +4286,7 @@ mod tests {
                     created_at_ms: 0,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 r#type: TEST_GRAPH_PROVIDER_TYPE.to_string(),
                 credentials: std::iter::once((
@@ -4104,6 +4302,7 @@ mod tests {
         .unwrap();
         create_provider_record(
             state.store.as_ref(),
+            "default",
             Provider {
                 metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
                     id: String::new(),
@@ -4111,7 +4310,7 @@ mod tests {
                     created_at_ms: 0,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 r#type: TEST_GRAPH_PROVIDER_TYPE.to_string(),
                 credentials: std::iter::once(("OTHER_TOKEN".to_string(), "other".to_string()))
@@ -4131,7 +4330,7 @@ mod tests {
                     created_at_ms: 0,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 spec: Some(SandboxSpec {
                     providers: vec!["existing-graph".to_string(), "refreshing-graph".to_string()],
@@ -4155,6 +4354,7 @@ mod tests {
                 ]),
                 secret_material_keys: vec!["client_secret".to_string()],
                 expires_at_ms: None,
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -4176,6 +4376,7 @@ mod tests {
         for name in ["first-graph", "second-graph"] {
             create_provider_record(
                 state.store.as_ref(),
+                "default",
                 Provider {
                     metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
                         id: String::new(),
@@ -4183,7 +4384,7 @@ mod tests {
                         created_at_ms: 0,
                         labels: HashMap::new(),
                         resource_version: 0,
-                        annotations: HashMap::new(),
+                        workspace: "default".to_string(),
                     }),
                     r#type: TEST_GRAPH_PROVIDER_TYPE.to_string(),
                     credentials: HashMap::new(),
@@ -4203,7 +4404,7 @@ mod tests {
                     created_at_ms: 0,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 spec: Some(SandboxSpec {
                     providers: vec!["first-graph".to_string(), "second-graph".to_string()],
@@ -4227,6 +4428,7 @@ mod tests {
                 ]),
                 secret_material_keys: vec!["client_secret".to_string()],
                 expires_at_ms: None,
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -4245,6 +4447,7 @@ mod tests {
                 ]),
                 secret_material_keys: vec!["client_secret".to_string()],
                 expires_at_ms: None,
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -4263,6 +4466,7 @@ mod tests {
         import_test_graph_refresh_profile(&state).await;
         create_provider_record(
             state.store.as_ref(),
+            "default",
             Provider {
                 metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
                     id: String::new(),
@@ -4270,7 +4474,7 @@ mod tests {
                     created_at_ms: 0,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 r#type: TEST_GRAPH_PROVIDER_TYPE.to_string(),
                 credentials: std::iter::once((
@@ -4302,6 +4506,7 @@ mod tests {
                 ]),
                 secret_material_keys: vec!["client_secret".to_string()],
                 expires_at_ms: None,
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -4318,6 +4523,7 @@ mod tests {
                 material: HashMap::from([("tenant_id".to_string(), "tenant".to_string())]),
                 secret_material_keys: vec!["client_secret".to_string()],
                 expires_at_ms: None,
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -4331,6 +4537,7 @@ mod tests {
         let state = test_server_state().await;
         create_provider_record(
             state.store.as_ref(),
+            "default",
             Provider {
                 metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
                     id: String::new(),
@@ -4338,7 +4545,7 @@ mod tests {
                     created_at_ms: 0,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 r#type: "outlook".to_string(),
                 credentials: std::iter::once((
@@ -4366,6 +4573,7 @@ mod tests {
                     material: HashMap::new(),
                     secret_material_keys: Vec::new(),
                     expires_at_ms: None,
+                    workspace: "default".to_string(),
                 }),
             )
             .await
@@ -4394,6 +4602,7 @@ mod tests {
                     profile: Some(custom_profile("custom-api")),
                     source: "custom-api.yaml".to_string(),
                 }],
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -4403,6 +4612,7 @@ mod tests {
             &state,
             Request::new(DeleteProviderProfileRequest {
                 id: "custom-api".to_string(),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -4414,6 +4624,7 @@ mod tests {
             &state,
             Request::new(GetProviderProfileRequest {
                 id: "custom-api".to_string(),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -4437,6 +4648,7 @@ mod tests {
                 &task_state,
                 Request::new(DeleteProviderProfileRequest {
                     id: "guarded-delete".to_string(),
+                    workspace: "default".to_string(),
                 }),
             )
             .await
@@ -4463,7 +4675,7 @@ mod tests {
         let store = test_store().await;
 
         let created = provider_with_values("gitlab-local", "gitlab");
-        let persisted = create_provider_record(&store, created.clone())
+        let persisted = create_provider_record(&store, "default", created.clone())
             .await
             .unwrap();
         assert_eq!(persisted.object_name(), "gitlab-local");
@@ -4471,18 +4683,25 @@ mod tests {
         assert!(!persisted.object_id().is_empty());
         let provider_id = persisted.object_id().to_string();
 
-        let duplicate_err = create_provider_record(&store, created).await.unwrap_err();
+        let duplicate_err = create_provider_record(&store, "default", created)
+            .await
+            .unwrap_err();
         assert_eq!(duplicate_err.code(), Code::AlreadyExists);
 
-        let loaded = get_provider_record(&store, "gitlab-local").await.unwrap();
+        let loaded = get_provider_record(&store, "default", "gitlab-local")
+            .await
+            .unwrap();
         assert_eq!(loaded.object_id(), provider_id);
 
-        let listed = list_provider_records(&store, 100, 0).await.unwrap();
+        let listed = list_provider_records(&store, "default", 100, 0)
+            .await
+            .unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].object_name(), "gitlab-local");
 
         let updated = update_provider_record(
             &store,
+            "default",
             Provider {
                 metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
                     id: String::new(),
@@ -4490,7 +4709,7 @@ mod tests {
                     created_at_ms: 1_000_000,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 r#type: "gitlab".to_string(),
                 credentials: std::iter::once((
@@ -4517,7 +4736,7 @@ mod tests {
             Some(&"REDACTED".to_string()),
         );
         let stored: Provider = store
-            .get_message_by_name("gitlab-local")
+            .get_message_by_name("default", "gitlab-local")
             .await
             .unwrap()
             .unwrap();
@@ -4535,17 +4754,17 @@ mod tests {
         );
         assert_eq!(updated.config.get("region"), Some(&"us-west".to_string()));
 
-        let deleted = delete_provider_record(&store, "gitlab-local")
+        let deleted = delete_provider_record(&store, "default", "gitlab-local")
             .await
             .unwrap();
         assert!(deleted);
 
-        let deleted_again = delete_provider_record(&store, "gitlab-local")
+        let deleted_again = delete_provider_record(&store, "default", "gitlab-local")
             .await
             .unwrap();
         assert!(!deleted_again);
 
-        let missing = get_provider_record(&store, "gitlab-local")
+        let missing = get_provider_record(&store, "default", "gitlab-local")
             .await
             .unwrap_err();
         assert_eq!(missing.code(), Code::NotFound);
@@ -4557,6 +4776,7 @@ mod tests {
 
         let provider = create_provider_record(
             &store,
+            "default",
             Provider {
                 credential_expires_at_ms: HashMap::from([("API_TOKEN".to_string(), 123_456)]),
                 ..provider_with_values("gitlab-local", "gitlab")
@@ -4566,6 +4786,7 @@ mod tests {
         .unwrap();
         let refresh_state = crate::provider_refresh::new_refresh_state(
             &provider,
+            "default",
             "API_TOKEN",
             crate::provider_refresh::NewRefreshStateConfig {
                 strategy: ProviderCredentialRefreshStrategy::External,
@@ -4586,7 +4807,7 @@ mod tests {
             .await
             .unwrap();
 
-        let deleted = delete_provider_record(&store, "gitlab-local")
+        let deleted = delete_provider_record(&store, "default", "gitlab-local")
             .await
             .unwrap();
         assert!(deleted);
@@ -4602,9 +4823,13 @@ mod tests {
     async fn delete_provider_rejects_attached_provider() {
         let store = test_store().await;
 
-        create_provider_record(&store, provider_with_values("gitlab-local", "gitlab"))
-            .await
-            .unwrap();
+        create_provider_record(
+            &store,
+            "default",
+            provider_with_values("gitlab-local", "gitlab"),
+        )
+        .await
+        .unwrap();
         store
             .put_message(&Sandbox {
                 metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
@@ -4613,7 +4838,7 @@ mod tests {
                     created_at_ms: 0,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 spec: Some(SandboxSpec {
                     providers: vec!["gitlab-local".to_string()],
@@ -4624,7 +4849,7 @@ mod tests {
             .await
             .unwrap();
 
-        let err = delete_provider_record(&store, "gitlab-local")
+        let err = delete_provider_record(&store, "default", "gitlab-local")
             .await
             .unwrap_err();
         assert_eq!(err.code(), Code::FailedPrecondition);
@@ -4641,7 +4866,9 @@ mod tests {
 
         // Create provider and verify resource_version: 1 in response
         let created = provider_with_values("test-provider", "openai");
-        let persisted = create_provider_record(&store, created).await.unwrap();
+        let persisted = create_provider_record(&store, "default", created)
+            .await
+            .unwrap();
         assert_eq!(
             persisted.metadata.as_ref().unwrap().resource_version,
             1,
@@ -4651,6 +4878,7 @@ mod tests {
         // Update provider and verify resource_version: 2 in response
         let updated = update_provider_record(
             &store,
+            "default",
             Provider {
                 metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
                     id: String::new(),
@@ -4658,7 +4886,7 @@ mod tests {
                     created_at_ms: 1_000_000,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 r#type: "openai".to_string(),
                 credentials: std::iter::once((
@@ -4681,6 +4909,7 @@ mod tests {
         // Update again and verify resource_version: 3
         let updated_again = update_provider_record(
             &store,
+            "default",
             Provider {
                 metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
                     id: String::new(),
@@ -4688,7 +4917,7 @@ mod tests {
                     created_at_ms: 1_000_000,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 r#type: "openai".to_string(),
                 credentials: std::iter::once((
@@ -4716,6 +4945,7 @@ mod tests {
 
         let create_missing_type = create_provider_record(
             store,
+            "default",
             Provider {
                 metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
                     id: String::new(),
@@ -4723,7 +4953,7 @@ mod tests {
                     created_at_ms: 1_000_000,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 r#type: String::new(),
                 credentials: HashMap::new(),
@@ -4737,6 +4967,7 @@ mod tests {
 
         let create_missing_credentials = create_provider_record(
             store,
+            "default",
             Provider {
                 metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
                     id: String::new(),
@@ -4744,7 +4975,7 @@ mod tests {
                     created_at_ms: 1_000_000,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 r#type: "gitlab".to_string(),
                 credentials: HashMap::new(),
@@ -4807,12 +5038,14 @@ mod tests {
                     }),
                     source: "delegated-refresh-api.yaml".to_string(),
                 }],
+                workspace: "default".to_string(),
             }),
         )
         .await
         .unwrap();
         let delegated_refresh_bootstrap_provider = create_provider_record(
             store,
+            "default",
             Provider {
                 metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
                     id: String::new(),
@@ -4820,7 +5053,7 @@ mod tests {
                     created_at_ms: 1_000_000,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 r#type: "delegated-refresh-api".to_string(),
                 credentials: HashMap::new(),
@@ -4844,12 +5077,14 @@ mod tests {
                     profile: Some(mixed_required_profile),
                     source: "mixed-required-api.yaml".to_string(),
                 }],
+                workspace: "default".to_string(),
             }),
         )
         .await
         .unwrap();
         let mixed_required_empty = create_provider_record(
             store,
+            "default",
             Provider {
                 metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
                     id: String::new(),
@@ -4857,7 +5092,7 @@ mod tests {
                     created_at_ms: 1_000_000,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 r#type: "mixed-required-api".to_string(),
                 credentials: HashMap::new(),
@@ -4881,12 +5116,14 @@ mod tests {
                     profile: Some(optional_static_profile),
                     source: "optional-static-api.yaml".to_string(),
                 }],
+                workspace: "default".to_string(),
             }),
         )
         .await
         .unwrap();
         let optional_static_empty = create_provider_record(
             store,
+            "default",
             Provider {
                 metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
                     id: String::new(),
@@ -4894,7 +5131,7 @@ mod tests {
                     created_at_ms: 1_000_000,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 r#type: "optional-static-api".to_string(),
                 credentials: HashMap::new(),
@@ -4908,6 +5145,7 @@ mod tests {
 
         let vertex_empty = create_provider_record(
             store,
+            "default",
             Provider {
                 metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
                     id: String::new(),
@@ -4915,7 +5153,7 @@ mod tests {
                     created_at_ms: 1_000_000,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 r#type: "google-vertex-ai".to_string(),
                 credentials: HashMap::new(),
@@ -4927,14 +5165,17 @@ mod tests {
         .unwrap();
         assert!(vertex_empty.credentials.is_empty());
 
-        let get_err = get_provider_record(store, "").await.unwrap_err();
+        let get_err = get_provider_record(store, "default", "").await.unwrap_err();
         assert_eq!(get_err.code(), Code::InvalidArgument);
 
-        let delete_err = delete_provider_record(store, "").await.unwrap_err();
+        let delete_err = delete_provider_record(store, "default", "")
+            .await
+            .unwrap_err();
         assert_eq!(delete_err.code(), Code::InvalidArgument);
 
         let update_missing_err = update_provider_record(
             store,
+            "default",
             Provider {
                 metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
                     id: String::new(),
@@ -4942,7 +5183,7 @@ mod tests {
                     created_at_ms: 1_000_000,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 r#type: String::new(),
                 credentials: HashMap::new(),
@@ -4960,10 +5201,13 @@ mod tests {
         let store = test_store().await;
 
         let created = provider_with_values("noop-test", "nvidia");
-        let persisted = create_provider_record(&store, created).await.unwrap();
+        let persisted = create_provider_record(&store, "default", created)
+            .await
+            .unwrap();
 
         let updated = update_provider_record(
             &store,
+            "default",
             Provider {
                 metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
                     id: String::new(),
@@ -4971,7 +5215,7 @@ mod tests {
                     created_at_ms: 1_000_000,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 r#type: String::new(),
                 credentials: HashMap::new(),
@@ -4996,7 +5240,7 @@ mod tests {
         );
         assert_eq!(updated.config.get("region"), Some(&"us-west".to_string()));
         let stored: Provider = store
-            .get_message_by_name("noop-test")
+            .get_message_by_name("default", "noop-test")
             .await
             .unwrap()
             .unwrap();
@@ -5008,10 +5252,13 @@ mod tests {
         let store = test_store().await;
 
         let created = provider_with_values("delete-key-test", "openai");
-        create_provider_record(&store, created).await.unwrap();
+        create_provider_record(&store, "default", created)
+            .await
+            .unwrap();
 
         let updated = update_provider_record(
             &store,
+            "default",
             Provider {
                 metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
                     id: String::new(),
@@ -5019,7 +5266,7 @@ mod tests {
                     created_at_ms: 0,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 r#type: String::new(),
                 credentials: std::iter::once(("SECONDARY".to_string(), String::new())).collect(),
@@ -5043,7 +5290,7 @@ mod tests {
         );
         assert!(!updated.config.contains_key("region"));
         let stored: Provider = store
-            .get_message_by_name("delete-key-test")
+            .get_message_by_name("default", "delete-key-test")
             .await
             .unwrap()
             .unwrap();
@@ -5060,10 +5307,13 @@ mod tests {
         let store = test_store().await;
 
         let created = provider_with_values("type-preserve-test", "anthropic");
-        create_provider_record(&store, created).await.unwrap();
+        create_provider_record(&store, "default", created)
+            .await
+            .unwrap();
 
         let updated = update_provider_record(
             &store,
+            "default",
             Provider {
                 metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
                     id: String::new(),
@@ -5071,7 +5321,7 @@ mod tests {
                     created_at_ms: 0,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 r#type: String::new(),
                 credentials: HashMap::new(),
@@ -5090,10 +5340,13 @@ mod tests {
         let store = test_store().await;
 
         let created = provider_with_values("type-change-test", "nvidia");
-        create_provider_record(&store, created).await.unwrap();
+        create_provider_record(&store, "default", created)
+            .await
+            .unwrap();
 
         let err = update_provider_record(
             &store,
+            "default",
             Provider {
                 metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
                     id: String::new(),
@@ -5101,7 +5354,7 @@ mod tests {
                     created_at_ms: 0,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 r#type: "openai".to_string(),
                 credentials: HashMap::new(),
@@ -5121,11 +5374,14 @@ mod tests {
         let store = test_store().await;
 
         let created = provider_with_values("validate-merge-test", "gitlab");
-        create_provider_record(&store, created).await.unwrap();
+        create_provider_record(&store, "default", created)
+            .await
+            .unwrap();
 
         let oversized_key = "K".repeat(MAX_MAP_KEY_LEN + 1);
         let err = update_provider_record(
             &store,
+            "default",
             Provider {
                 metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
                     id: String::new(),
@@ -5133,7 +5389,7 @@ mod tests {
                     created_at_ms: 0,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 r#type: String::new(),
                 credentials: std::iter::once((oversized_key, "value".to_string())).collect(),
@@ -5162,7 +5418,7 @@ mod tests {
                 created_at_ms: 0,
                 labels: HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             r#type: oversized_type.clone(),
             credentials: std::iter::once(("API_TOKEN".to_string(), "old".to_string())).collect(),
@@ -5173,6 +5429,7 @@ mod tests {
 
         let updated = update_provider_record(
             &store,
+            "default",
             Provider {
                 metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
                     id: String::new(),
@@ -5180,7 +5437,7 @@ mod tests {
                     created_at_ms: 0,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 r#type: String::new(),
                 credentials: std::iter::once(("API_TOKEN".to_string(), "new".to_string()))
@@ -5198,7 +5455,9 @@ mod tests {
     #[tokio::test]
     async fn resolve_provider_env_empty_list_returns_empty() {
         let store = test_store().await;
-        let result = resolve_provider_environment(&store, &[]).await.unwrap();
+        let result = resolve_provider_environment(&store, "default", &[])
+            .await
+            .unwrap();
         assert!(result.is_empty());
     }
 
@@ -5212,7 +5471,7 @@ mod tests {
                 created_at_ms: 0,
                 labels: HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             r#type: "claude".to_string(),
             credentials: [
@@ -5228,9 +5487,11 @@ mod tests {
             .collect(),
             credential_expires_at_ms: HashMap::new(),
         };
-        create_provider_record(&store, provider).await.unwrap();
+        create_provider_record(&store, "default", provider)
+            .await
+            .unwrap();
 
-        let result = resolve_provider_environment(&store, &["claude-local".to_string()])
+        let result = resolve_provider_environment(&store, "default", &["claude-local".to_string()])
             .await
             .unwrap();
         assert_eq!(result.get("ANTHROPIC_API_KEY"), Some(&"sk-abc".to_string()));
@@ -5243,14 +5504,16 @@ mod tests {
         let store = test_store().await;
         create_provider_record(
             &store,
+            "default",
             provider_with_values("static-provider", "unprofiled-static-api"),
         )
         .await
         .unwrap();
 
-        let result = resolve_provider_environment(&store, &["static-provider".to_string()])
-            .await
-            .unwrap();
+        let result =
+            resolve_provider_environment(&store, "default", &["static-provider".to_string()])
+                .await
+                .unwrap();
 
         assert_eq!(result.get("API_TOKEN"), Some(&"token-123".to_string()));
         assert!(result.dynamic_credentials.is_empty());
@@ -5267,7 +5530,7 @@ mod tests {
                 created_at_ms: 0,
                 labels: HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             r#type: "test".to_string(),
             credentials: [
@@ -5284,11 +5547,14 @@ mod tests {
             .into_iter()
             .collect(),
         };
-        create_provider_record(&store, provider).await.unwrap();
-
-        let result = resolve_provider_environment(&store, &["expiring-provider".to_string()])
+        create_provider_record(&store, "default", provider)
             .await
             .unwrap();
+
+        let result =
+            resolve_provider_environment(&store, "default", &["expiring-provider".to_string()])
+                .await
+                .unwrap();
         assert_eq!(result.get("FRESH_TOKEN"), Some(&"fresh".to_string()));
         assert!(!result.contains_key("STALE_TOKEN"));
         assert_eq!(
@@ -5300,7 +5566,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_provider_env_unknown_name_returns_error() {
         let store = test_store().await;
-        let err = resolve_provider_environment(&store, &["nonexistent".to_string()])
+        let err = resolve_provider_environment(&store, "default", &["nonexistent".to_string()])
             .await
             .unwrap_err();
         assert_eq!(err.code(), Code::FailedPrecondition);
@@ -5317,7 +5583,7 @@ mod tests {
                 created_at_ms: 0,
                 labels: HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             r#type: "test".to_string(),
             credentials: [
@@ -5330,11 +5596,14 @@ mod tests {
             config: HashMap::new(),
             credential_expires_at_ms: HashMap::new(),
         };
-        create_provider_record(&store, provider).await.unwrap();
-
-        let result = resolve_provider_environment(&store, &["test-provider".to_string()])
+        create_provider_record(&store, "default", provider)
             .await
             .unwrap();
+
+        let result =
+            resolve_provider_environment(&store, "default", &["test-provider".to_string()])
+                .await
+                .unwrap();
         assert_eq!(result.get("VALID_KEY"), Some(&"value".to_string()));
         assert!(!result.contains_key("nested.api_key"));
         assert!(!result.contains_key("bad-key"));
@@ -5345,6 +5614,7 @@ mod tests {
         let store = test_store().await;
         create_provider_record(
             &store,
+            "default",
             Provider {
                 metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
                     id: String::new(),
@@ -5352,7 +5622,7 @@ mod tests {
                     created_at_ms: 0,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 r#type: "claude".to_string(),
                 credentials: std::iter::once((
@@ -5368,6 +5638,7 @@ mod tests {
         .unwrap();
         create_provider_record(
             &store,
+            "default",
             Provider {
                 metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
                     id: String::new(),
@@ -5375,7 +5646,7 @@ mod tests {
                     created_at_ms: 0,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 r#type: "gitlab".to_string(),
                 credentials: std::iter::once(("GITLAB_TOKEN".to_string(), "glpat-xyz".to_string()))
@@ -5389,6 +5660,7 @@ mod tests {
 
         let result = resolve_provider_environment(
             &store,
+            "default",
             &["claude-local".to_string(), "gitlab-local".to_string()],
         )
         .await
@@ -5402,6 +5674,7 @@ mod tests {
         let store = test_store().await;
         create_provider_record(
             &store,
+            "default",
             Provider {
                 metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
                     id: String::new(),
@@ -5409,7 +5682,7 @@ mod tests {
                     created_at_ms: 0,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 r#type: "claude".to_string(),
                 credentials: std::iter::once(("SHARED_KEY".to_string(), "first-value".to_string()))
@@ -5422,6 +5695,7 @@ mod tests {
         .unwrap();
         create_provider_record(
             &store,
+            "default",
             Provider {
                 metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
                     id: String::new(),
@@ -5429,7 +5703,7 @@ mod tests {
                     created_at_ms: 0,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 r#type: "gitlab".to_string(),
                 credentials: std::iter::once((
@@ -5446,6 +5720,7 @@ mod tests {
 
         let err = resolve_provider_environment(
             &store,
+            "default",
             &["provider-a".to_string(), "provider-b".to_string()],
         )
         .await
@@ -5461,6 +5736,7 @@ mod tests {
         let store = test_store().await;
         create_provider_record(
             &store,
+            "default",
             Provider {
                 metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
                     id: String::new(),
@@ -5468,7 +5744,7 @@ mod tests {
                     created_at_ms: 0,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 r#type: "google-vertex-ai".to_string(),
                 credentials: std::iter::once((
@@ -5491,7 +5767,7 @@ mod tests {
         .await
         .unwrap();
 
-        let result = resolve_provider_environment(&store, &["vertex-local".to_string()])
+        let result = resolve_provider_environment(&store, "default", &["vertex-local".to_string()])
             .await
             .unwrap();
 
@@ -5536,6 +5812,7 @@ mod tests {
         let store = test_store().await;
         create_provider_record(
             &store,
+            "default",
             Provider {
                 metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
                     id: String::new(),
@@ -5543,7 +5820,7 @@ mod tests {
                     created_at_ms: 0,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 r#type: "google-vertex-ai".to_string(),
                 credentials: [
@@ -5565,9 +5842,10 @@ mod tests {
         .await
         .unwrap();
 
-        let result = resolve_provider_environment(&store, &["vertex-bootstrap".to_string()])
-            .await
-            .unwrap();
+        let result =
+            resolve_provider_environment(&store, "default", &["vertex-bootstrap".to_string()])
+                .await
+                .unwrap();
 
         assert!(!result.contains_key("GOOGLE_SERVICE_ACCOUNT_KEY"));
         assert_eq!(
@@ -5581,6 +5859,7 @@ mod tests {
         let store = test_store().await;
         create_provider_record(
             &store,
+            "default",
             Provider {
                 metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
                     id: String::new(),
@@ -5588,7 +5867,7 @@ mod tests {
                     created_at_ms: 0,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 r#type: "google-vertex-ai".to_string(),
                 credentials: std::iter::once((
@@ -5603,9 +5882,10 @@ mod tests {
         .await
         .unwrap();
 
-        let result = resolve_provider_environment(&store, &["vertex-no-config".to_string()])
-            .await
-            .unwrap();
+        let result =
+            resolve_provider_environment(&store, "default", &["vertex-no-config".to_string()])
+                .await
+                .unwrap();
 
         // Static flags still present.
         assert!(!result.contains_key("CLAUDE_CODE_USE_VERTEX"));
@@ -5630,6 +5910,7 @@ mod tests {
         let store = test_store().await;
         create_provider_record(
             &store,
+            "default",
             Provider {
                 metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
                     id: String::new(),
@@ -5637,7 +5918,7 @@ mod tests {
                     created_at_ms: 0,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 r#type: "google-vertex-ai".to_string(),
                 credentials: [
@@ -5662,9 +5943,10 @@ mod tests {
         .await
         .unwrap();
 
-        let result = resolve_provider_environment(&store, &["vertex-collision".to_string()])
-            .await
-            .unwrap();
+        let result =
+            resolve_provider_environment(&store, "default", &["vertex-collision".to_string()])
+                .await
+                .unwrap();
 
         // Credential value wins over the injected static value.
         assert_eq!(
@@ -5678,6 +5960,7 @@ mod tests {
         let store = test_store().await;
         create_provider_record(
             &store,
+            "default",
             Provider {
                 metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
                     id: String::new(),
@@ -5685,7 +5968,7 @@ mod tests {
                     created_at_ms: 0,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 r#type: "openai".to_string(),
                 credentials: std::iter::once(("OPENAI_API_KEY".to_string(), "sk-test".to_string()))
@@ -5697,7 +5980,7 @@ mod tests {
         .await
         .unwrap();
 
-        let result = resolve_provider_environment(&store, &["openai-local".to_string()])
+        let result = resolve_provider_environment(&store, "default", &["openai-local".to_string()])
             .await
             .unwrap();
 
@@ -5717,6 +6000,7 @@ mod tests {
         let store = test_store().await;
         create_provider_record(
             &store,
+            "default",
             Provider {
                 metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
                     id: String::new(),
@@ -5724,7 +6008,7 @@ mod tests {
                     created_at_ms: 0,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 r#type: "outlook".to_string(),
                 credentials: std::iter::once((
@@ -5740,6 +6024,7 @@ mod tests {
         .unwrap();
         create_provider_record(
             &store,
+            "default",
             Provider {
                 metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
                     id: String::new(),
@@ -5747,7 +6032,7 @@ mod tests {
                     created_at_ms: 0,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 r#type: "google-drive".to_string(),
                 credentials: std::iter::once((
@@ -5768,7 +6053,7 @@ mod tests {
                 created_at_ms: 0,
                 labels: HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             spec: Some(SandboxSpec {
                 providers: vec!["provider-a".to_string(), "provider-b".to_string()],
@@ -5780,6 +6065,7 @@ mod tests {
 
         let err = update_provider_record(
             &store,
+            "default",
             Provider {
                 metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
                     id: String::new(),
@@ -5787,7 +6073,7 @@ mod tests {
                     created_at_ms: 0,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 r#type: String::new(),
                 credentials: std::iter::once((
@@ -5815,6 +6101,7 @@ mod tests {
 
         create_provider_record(
             &store,
+            "default",
             Provider {
                 metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
                     id: String::new(),
@@ -5822,7 +6109,7 @@ mod tests {
                     created_at_ms: 1_000_000,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 r#type: "claude".to_string(),
                 credentials: std::iter::once((
@@ -5844,7 +6131,7 @@ mod tests {
                 created_at_ms: 1_000_000,
                 labels: HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             spec: Some(SandboxSpec {
                 providers: vec!["my-claude".to_string()],
@@ -5861,7 +6148,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let spec = loaded.spec.unwrap();
-        let env = resolve_provider_environment(&store, &spec.providers)
+        let env = resolve_provider_environment(&store, "default", &spec.providers)
             .await
             .unwrap();
 
@@ -5881,7 +6168,7 @@ mod tests {
                 created_at_ms: 1_000_000,
                 labels: HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             spec: Some(SandboxSpec::default()),
             status: None,
@@ -5895,7 +6182,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let spec = loaded.spec.unwrap();
-        let env = resolve_provider_environment(&store, &spec.providers)
+        let env = resolve_provider_environment(&store, "default", &spec.providers)
             .await
             .unwrap();
 
@@ -5917,7 +6204,7 @@ mod tests {
 
         // Create a valid provider
         let provider = provider_with_values("test-validate-provider", "test-type");
-        let created = create_provider_record(&store, provider.clone())
+        let created = create_provider_record(&store, "default", provider.clone())
             .await
             .unwrap();
 
@@ -5929,7 +6216,7 @@ mod tests {
                 created_at_ms: 0,
                 labels: HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             r#type: String::new(), // Empty type is ignored in update
             credentials: HashMap::new(),
@@ -5943,7 +6230,7 @@ mod tests {
             "oversized-key-value".to_string(),
         );
 
-        let result = update_provider_record(&store, update_req).await;
+        let result = update_provider_record(&store, "default", update_req).await;
 
         // Update should fail with InvalidArgument due to oversized key
         assert!(result.is_err(), "update with invalid data should fail");
@@ -5961,7 +6248,7 @@ mod tests {
 
         // Verify database still contains the ORIGINAL valid provider (not the invalid one)
         let stored = store
-            .get_message_by_name::<Provider>("test-validate-provider")
+            .get_message_by_name::<Provider>("default", "test-validate-provider")
             .await
             .unwrap()
             .expect("provider should still exist");
@@ -5993,11 +6280,17 @@ mod tests {
         // Spawn two concurrent creation attempts for the same provider
         let store1 = store.clone();
         let provider1 = provider.clone();
-        let handle1 = tokio::spawn(async move { create_provider_record(&store1, provider1).await });
+        let handle1 =
+            tokio::spawn(
+                async move { create_provider_record(&store1, "default", provider1).await },
+            );
 
         let store2 = store.clone();
         let provider2 = provider.clone();
-        let handle2 = tokio::spawn(async move { create_provider_record(&store2, provider2).await });
+        let handle2 =
+            tokio::spawn(
+                async move { create_provider_record(&store2, "default", provider2).await },
+            );
 
         // Wait for both to complete
         let result1 = handle1.await.unwrap();
@@ -6029,7 +6322,7 @@ mod tests {
             .find_map(Result::ok)
             .expect("should have one successful creation");
         let retrieved = store
-            .get_message_by_name::<Provider>("test-concurrent-provider")
+            .get_message_by_name::<Provider>("default", "test-concurrent-provider")
             .await
             .unwrap();
         assert!(
@@ -6056,6 +6349,7 @@ mod tests {
             &state,
             Request::new(CreateProviderRequest {
                 provider: Some(provider.clone()),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -6064,7 +6358,7 @@ mod tests {
         // Fetch the provider to get its current resource_version
         let current = state
             .store
-            .get_message_by_name::<Provider>("test-provider")
+            .get_message_by_name::<Provider>("default", "test-provider")
             .await
             .unwrap()
             .unwrap();
@@ -6083,6 +6377,7 @@ mod tests {
             Request::new(UpdateProviderRequest {
                 provider: Some(updated_provider.clone()),
                 credential_expires_at_ms: HashMap::new(),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -6124,6 +6419,7 @@ mod tests {
             &state,
             Request::new(CreateProviderRequest {
                 provider: Some(provider.clone()),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -6132,7 +6428,7 @@ mod tests {
         // Fetch the current state
         let current = state
             .store
-            .get_message_by_name::<Provider>("test-provider")
+            .get_message_by_name::<Provider>("default", "test-provider")
             .await
             .unwrap()
             .unwrap();
@@ -6151,6 +6447,7 @@ mod tests {
             Request::new(UpdateProviderRequest {
                 provider: Some(stale_provider),
                 credential_expires_at_ms: HashMap::new(),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -6167,7 +6464,7 @@ mod tests {
         // Verify the provider was not modified
         let unchanged = state
             .store
-            .get_message_by_name::<Provider>("test-provider")
+            .get_message_by_name::<Provider>("default", "test-provider")
             .await
             .unwrap()
             .unwrap();
@@ -6191,6 +6488,7 @@ mod tests {
             &state,
             Request::new(CreateProviderRequest {
                 provider: Some(provider.clone()),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -6199,7 +6497,7 @@ mod tests {
         // All three clients fetch the provider and see the same version
         let initial = state
             .store
-            .get_message_by_name::<Provider>("test-provider")
+            .get_message_by_name::<Provider>("default", "test-provider")
             .await
             .unwrap()
             .unwrap();
@@ -6221,6 +6519,7 @@ mod tests {
                     Request::new(UpdateProviderRequest {
                         provider: Some(updated),
                         credential_expires_at_ms: HashMap::new(),
+                        workspace: "default".to_string(),
                     }),
                 )
                 .await
@@ -6253,7 +6552,7 @@ mod tests {
         // Final provider should have exactly 1 new credential key and resource_version = initial_version + 1
         let final_provider = state
             .store
-            .get_message_by_name::<Provider>("test-provider")
+            .get_message_by_name::<Provider>("default", "test-provider")
             .await
             .unwrap()
             .unwrap();
@@ -6277,7 +6576,7 @@ mod tests {
                 created_at_ms: 0,
                 labels: HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             r#type: "google-cloud".to_string(),
             credentials: HashMap::new(),
@@ -6380,7 +6679,7 @@ mod tests {
                 created_at_ms: 0,
                 labels: HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             r#type: "github".to_string(),
             credentials: HashMap::new(),
@@ -6393,5 +6692,239 @@ mod tests {
             env.is_empty(),
             "non-GCP provider should not inject any env vars"
         );
+    }
+
+    #[tokio::test]
+    async fn provider_crud_is_workspace_isolated() {
+        use openshell_core::proto::{
+            CreateProviderRequest, CreateWorkspaceRequest, DeleteProviderRequest,
+            GetProviderRequest, ListProvidersRequest,
+        };
+
+        let state = test_server_state().await;
+
+        // Create a second workspace "beta".
+        crate::grpc::workspace::handle_create_workspace(
+            &state,
+            Request::new(CreateWorkspaceRequest {
+                name: "beta".to_string(),
+                labels: HashMap::new(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        // Create same-named provider in each workspace via handlers.
+        let make_provider = || Provider {
+            metadata: None,
+            r#type: "custom".to_string(),
+            credentials: HashMap::from([("TOKEN".to_string(), "secret".to_string())]),
+            config: HashMap::new(),
+            credential_expires_at_ms: HashMap::new(),
+        };
+
+        let created_default = handle_create_provider(
+            &state,
+            Request::new(CreateProviderRequest {
+                provider: Some({
+                    let mut p = make_provider();
+                    p.metadata = Some(openshell_core::proto::datamodel::v1::ObjectMeta {
+                        id: String::new(),
+                        name: "shared-name".to_string(),
+                        created_at_ms: 0,
+                        labels: HashMap::new(),
+                        resource_version: 0,
+                        workspace: String::new(),
+                    });
+                    p
+                }),
+                workspace: "default".to_string(),
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+        let default_id = created_default
+            .provider
+            .as_ref()
+            .unwrap()
+            .object_id()
+            .to_string();
+
+        let created_beta = handle_create_provider(
+            &state,
+            Request::new(CreateProviderRequest {
+                provider: Some({
+                    let mut p = make_provider();
+                    p.metadata = Some(openshell_core::proto::datamodel::v1::ObjectMeta {
+                        id: String::new(),
+                        name: "shared-name".to_string(),
+                        created_at_ms: 0,
+                        labels: HashMap::new(),
+                        resource_version: 0,
+                        workspace: String::new(),
+                    });
+                    p
+                }),
+                workspace: "beta".to_string(),
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+        let beta_id = created_beta
+            .provider
+            .as_ref()
+            .unwrap()
+            .object_id()
+            .to_string();
+
+        assert_ne!(default_id, beta_id);
+
+        // Get in each workspace returns the correct provider.
+        let got = handle_get_provider(
+            &state,
+            Request::new(GetProviderRequest {
+                name: "shared-name".to_string(),
+                workspace: "default".to_string(),
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+        assert_eq!(got.provider.as_ref().unwrap().object_id(), default_id);
+
+        let got = handle_get_provider(
+            &state,
+            Request::new(GetProviderRequest {
+                name: "shared-name".to_string(),
+                workspace: "beta".to_string(),
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+        assert_eq!(got.provider.as_ref().unwrap().object_id(), beta_id);
+
+        // List is workspace-scoped.
+        let listed = handle_list_providers(
+            &state,
+            Request::new(ListProvidersRequest {
+                limit: 100,
+                offset: 0,
+                workspace: "default".to_string(),
+                all_workspaces: false,
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+        assert_eq!(listed.providers.len(), 1);
+        assert_eq!(listed.providers[0].object_id(), default_id);
+
+        let listed = handle_list_providers(
+            &state,
+            Request::new(ListProvidersRequest {
+                limit: 100,
+                offset: 0,
+                workspace: "beta".to_string(),
+                all_workspaces: false,
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+        assert_eq!(listed.providers.len(), 1);
+        assert_eq!(listed.providers[0].object_id(), beta_id);
+
+        // Delete in "default" does not affect "beta".
+        let deleted = handle_delete_provider(
+            &state,
+            Request::new(DeleteProviderRequest {
+                name: "shared-name".to_string(),
+                workspace: "default".to_string(),
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+        assert!(deleted.deleted);
+
+        let listed = handle_list_providers(
+            &state,
+            Request::new(ListProvidersRequest {
+                limit: 100,
+                offset: 0,
+                workspace: "default".to_string(),
+                all_workspaces: false,
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+        assert!(listed.providers.is_empty());
+
+        let got = handle_get_provider(
+            &state,
+            Request::new(GetProviderRequest {
+                name: "shared-name".to_string(),
+                workspace: "beta".to_string(),
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+        assert_eq!(got.provider.as_ref().unwrap().object_id(), beta_id);
+
+        // all_workspaces returns providers from all workspaces.
+        // Re-create the "default" provider.
+        handle_create_provider(
+            &state,
+            Request::new(CreateProviderRequest {
+                provider: Some({
+                    let mut p = make_provider();
+                    p.metadata = Some(openshell_core::proto::datamodel::v1::ObjectMeta {
+                        id: String::new(),
+                        name: "provider-d".to_string(),
+                        created_at_ms: 0,
+                        labels: HashMap::new(),
+                        resource_version: 0,
+                        workspace: String::new(),
+                    });
+                    p
+                }),
+                workspace: "default".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let listed = handle_list_providers(
+            &state,
+            Request::new(ListProvidersRequest {
+                limit: 100,
+                offset: 0,
+                workspace: String::new(),
+                all_workspaces: true,
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+        assert_eq!(listed.providers.len(), 2);
+
+        // all_workspaces with non-empty workspace is rejected.
+        let err = handle_list_providers(
+            &state,
+            Request::new(ListProvidersRequest {
+                limit: 100,
+                offset: 0,
+                workspace: "default".to_string(),
+                all_workspaces: true,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code(), Code::InvalidArgument);
     }
 }

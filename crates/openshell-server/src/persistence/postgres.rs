@@ -63,6 +63,7 @@ impl PostgresStore {
         object_type: &str,
         id: &str,
         name: &str,
+        workspace: &str,
         payload: &[u8],
         labels: Option<&str>,
     ) -> PersistenceResult<()> {
@@ -74,9 +75,9 @@ impl PostgresStore {
 
         sqlx::query(
             r"
-INSERT INTO objects (object_type, id, name, payload, created_at_ms, updated_at_ms, labels)
-VALUES ($1, $2, $3, $4, $5, $5, COALESCE($6, '{}'::jsonb))
-ON CONFLICT (object_type, name) WHERE name IS NOT NULL DO UPDATE SET
+INSERT INTO objects (object_type, id, name, workspace, payload, created_at_ms, updated_at_ms, labels)
+VALUES ($1, $2, $3, $4, $5, $6, $6, COALESCE($7, '{}'::jsonb))
+ON CONFLICT (object_type, workspace, name) WHERE name IS NOT NULL DO UPDATE SET
     payload = EXCLUDED.payload,
     updated_at_ms = EXCLUDED.updated_at_ms,
     labels = EXCLUDED.labels
@@ -85,6 +86,7 @@ ON CONFLICT (object_type, name) WHERE name IS NOT NULL DO UPDATE SET
         .bind(object_type)
         .bind(id)
         .bind(name)
+        .bind(workspace)
         .bind(payload)
         .bind(now_ms)
         .bind(labels_jsonb)
@@ -94,11 +96,13 @@ ON CONFLICT (object_type, name) WHERE name IS NOT NULL DO UPDATE SET
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn put_if(
         &self,
         object_type: &str,
         id: &str,
         name: &str,
+        workspace: &str,
         payload: &[u8],
         labels: Option<&str>,
         condition: WriteCondition,
@@ -114,14 +118,15 @@ ON CONFLICT (object_type, name) WHERE name IS NOT NULL DO UPDATE SET
                 // Insert only - fail if object exists
                 let row = sqlx::query(
                     r"
-INSERT INTO objects (object_type, id, name, payload, created_at_ms, updated_at_ms, labels, resource_version)
-VALUES ($1, $2, $3, $4, $5, $5, COALESCE($6, '{}'::jsonb), 1)
+INSERT INTO objects (object_type, id, name, workspace, payload, created_at_ms, updated_at_ms, labels, resource_version)
+VALUES ($1, $2, $3, $4, $5, $6, $6, COALESCE($7, '{}'::jsonb), 1)
 RETURNING resource_version, created_at_ms, updated_at_ms
 ",
                 )
                 .bind(object_type)
                 .bind(id)
                 .bind(name)
+                .bind(workspace)
                 .bind(payload)
                 .bind(now_ms)
                 .bind(labels_jsonb)
@@ -181,9 +186,9 @@ RETURNING resource_version, created_at_ms, updated_at_ms
                 // Unconditional upsert by name
                 let row = sqlx::query(
                     r"
-INSERT INTO objects (object_type, id, name, payload, created_at_ms, updated_at_ms, labels, resource_version)
-VALUES ($1, $2, $3, $4, $5, $5, COALESCE($6, '{}'::jsonb), 1)
-ON CONFLICT (object_type, name) WHERE name IS NOT NULL DO UPDATE SET
+INSERT INTO objects (object_type, id, name, workspace, payload, created_at_ms, updated_at_ms, labels, resource_version)
+VALUES ($1, $2, $3, $4, $5, $6, $6, COALESCE($7, '{}'::jsonb), 1)
+ON CONFLICT (object_type, workspace, name) WHERE name IS NOT NULL DO UPDATE SET
     payload = EXCLUDED.payload,
     updated_at_ms = EXCLUDED.updated_at_ms,
     labels = EXCLUDED.labels,
@@ -194,6 +199,7 @@ RETURNING resource_version, created_at_ms, updated_at_ms
                 .bind(object_type)
                 .bind(id)
                 .bind(name)
+                .bind(workspace)
                 .bind(payload)
                 .bind(now_ms)
                 .bind(labels_jsonb)
@@ -245,11 +251,13 @@ WHERE object_type = $1 AND id = $2 AND resource_version = $3
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn put_scoped(
         &self,
         object_type: &str,
         id: &str,
         name: &str,
+        workspace: &str,
         scope: &str,
         payload: &[u8],
         labels: Option<&str>,
@@ -262,9 +270,9 @@ WHERE object_type = $1 AND id = $2 AND resource_version = $3
 
         sqlx::query(
             r"
-INSERT INTO objects (object_type, id, name, scope, payload, created_at_ms, updated_at_ms, labels, resource_version)
-VALUES ($1, $2, $3, $4, $5, $6, $6, COALESCE($7, '{}'::jsonb), 1)
-ON CONFLICT (object_type, name) WHERE name IS NOT NULL DO UPDATE SET
+INSERT INTO objects (object_type, id, name, workspace, scope, payload, created_at_ms, updated_at_ms, labels, resource_version)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $7, COALESCE($8, '{}'::jsonb), 1)
+ON CONFLICT (object_type, workspace, name) WHERE name IS NOT NULL DO UPDATE SET
     scope = EXCLUDED.scope,
     payload = EXCLUDED.payload,
     updated_at_ms = EXCLUDED.updated_at_ms,
@@ -275,6 +283,7 @@ ON CONFLICT (object_type, name) WHERE name IS NOT NULL DO UPDATE SET
         .bind(object_type)
         .bind(id)
         .bind(name)
+        .bind(workspace)
         .bind(scope)
         .bind(payload)
         .bind(now_ms)
@@ -292,7 +301,7 @@ ON CONFLICT (object_type, name) WHERE name IS NOT NULL DO UPDATE SET
     ) -> PersistenceResult<Option<ObjectRecord>> {
         let row = sqlx::query(
             r"
-SELECT object_type, id, name, payload, created_at_ms, updated_at_ms, labels, resource_version
+SELECT object_type, id, name, workspace, payload, created_at_ms, updated_at_ms, labels, resource_version
 FROM objects
 WHERE object_type = $1 AND id = $2
 ",
@@ -309,16 +318,18 @@ WHERE object_type = $1 AND id = $2
     pub async fn get_by_name(
         &self,
         object_type: &str,
+        workspace: &str,
         name: &str,
     ) -> PersistenceResult<Option<ObjectRecord>> {
         let row = sqlx::query(
             r"
-SELECT object_type, id, name, payload, created_at_ms, updated_at_ms, labels, resource_version
+SELECT object_type, id, name, workspace, payload, created_at_ms, updated_at_ms, labels, resource_version
 FROM objects
-WHERE object_type = $1 AND name = $2
+WHERE object_type = $1 AND workspace = $2 AND name = $3
 ",
         )
         .bind(object_type)
+        .bind(workspace)
         .bind(name)
         .fetch_optional(&self.pool)
         .await
@@ -337,17 +348,52 @@ WHERE object_type = $1 AND name = $2
         Ok(result.rows_affected() > 0)
     }
 
-    pub async fn delete_by_name(&self, object_type: &str, name: &str) -> PersistenceResult<bool> {
-        let result = sqlx::query("DELETE FROM objects WHERE object_type = $1 AND name = $2")
-            .bind(object_type)
-            .bind(name)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| map_db_error(&e))?;
+    pub async fn delete_by_name(
+        &self,
+        object_type: &str,
+        workspace: &str,
+        name: &str,
+    ) -> PersistenceResult<bool> {
+        let result = sqlx::query(
+            "DELETE FROM objects WHERE object_type = $1 AND workspace = $2 AND name = $3",
+        )
+        .bind(object_type)
+        .bind(workspace)
+        .bind(name)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| map_db_error(&e))?;
         Ok(result.rows_affected() > 0)
     }
 
     pub async fn list(
+        &self,
+        object_type: &str,
+        workspace: &str,
+        limit: u32,
+        offset: u32,
+    ) -> PersistenceResult<Vec<ObjectRecord>> {
+        let rows = sqlx::query(
+            r"
+SELECT object_type, id, name, workspace, payload, created_at_ms, updated_at_ms, labels, resource_version
+FROM objects
+WHERE object_type = $1 AND workspace = $2
+ORDER BY created_at_ms ASC, name ASC
+LIMIT $3 OFFSET $4
+",
+        )
+        .bind(object_type)
+        .bind(workspace)
+        .bind(i64::from(limit))
+        .bind(i64::from(offset))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| map_db_error(&e))?;
+
+        Ok(rows.into_iter().map(row_to_object_record).collect())
+    }
+
+    pub async fn list_by_type(
         &self,
         object_type: &str,
         limit: u32,
@@ -355,7 +401,7 @@ WHERE object_type = $1 AND name = $2
     ) -> PersistenceResult<Vec<ObjectRecord>> {
         let rows = sqlx::query(
             r"
-SELECT object_type, id, name, payload, created_at_ms, updated_at_ms, labels, resource_version
+SELECT object_type, id, name, workspace, payload, created_at_ms, updated_at_ms, labels, resource_version
 FROM objects
 WHERE object_type = $1
 ORDER BY created_at_ms ASC, name ASC
@@ -381,7 +427,7 @@ LIMIT $2 OFFSET $3
     ) -> PersistenceResult<Vec<ObjectRecord>> {
         let rows = sqlx::query(
             r"
-SELECT object_type, id, name, payload, created_at_ms, updated_at_ms, labels
+SELECT object_type, id, name, workspace, payload, created_at_ms, updated_at_ms, labels
 FROM objects
 WHERE object_type = $1 AND scope = $2
 ORDER BY created_at_ms ASC, name ASC
@@ -402,6 +448,7 @@ LIMIT $3 OFFSET $4
     pub async fn list_with_selector(
         &self,
         object_type: &str,
+        workspace: &str,
         label_selector: &str,
         limit: u32,
         offset: u32,
@@ -414,14 +461,15 @@ LIMIT $3 OFFSET $4
 
         let rows = sqlx::query(
             r"
-SELECT object_type, id, name, payload, created_at_ms, updated_at_ms, labels, resource_version
+SELECT object_type, id, name, workspace, payload, created_at_ms, updated_at_ms, labels, resource_version
 FROM objects
-WHERE object_type = $1 AND labels @> $2
+WHERE object_type = $1 AND workspace = $2 AND labels @> $3
 ORDER BY created_at_ms ASC, name ASC
-LIMIT $3 OFFSET $4
+LIMIT $4 OFFSET $5
 ",
         )
         .bind(object_type)
+        .bind(workspace)
         .bind(&labels_jsonb)
         .bind(i64::from(limit))
         .bind(i64::from(offset))
@@ -436,6 +484,7 @@ LIMIT $3 OFFSET $4
         &self,
         id: &str,
         sandbox_id: &str,
+        workspace: &str,
         version: i64,
         payload: &[u8],
         hash: &str,
@@ -458,9 +507,9 @@ LIMIT $3 OFFSET $4
         sqlx::query(
             r"
 INSERT INTO objects (
-    object_type, id, scope, version, status, payload, created_at_ms, updated_at_ms
+    object_type, id, scope, version, status, payload, created_at_ms, updated_at_ms, workspace
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $8)
 ",
         )
         .bind(POLICY_OBJECT_TYPE)
@@ -470,6 +519,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
         .bind("pending")
         .bind(wrapped_payload)
         .bind(now_ms)
+        .bind(workspace)
         .execute(&self.pool)
         .await
         .map_err(|e| map_db_error(&e))?;
@@ -733,6 +783,7 @@ WHERE object_type = $1
         &self,
         chunk: &DraftChunkRecord,
         dedup_key: Option<&str>,
+        workspace: &str,
     ) -> PersistenceResult<String> {
         let payload = draft_chunk_payload_from_record(chunk)?;
         // RETURNING id gives the row's effective id whether INSERT inserted
@@ -741,9 +792,9 @@ WHERE object_type = $1
         let row = sqlx::query(
             r"
 INSERT INTO objects (
-    object_type, id, scope, status, dedup_key, hit_count, payload, created_at_ms, updated_at_ms
+    object_type, id, scope, status, dedup_key, hit_count, payload, created_at_ms, updated_at_ms, workspace
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 ON CONFLICT (object_type, scope, dedup_key) WHERE dedup_key IS NOT NULL DO UPDATE SET
     hit_count = objects.hit_count + EXCLUDED.hit_count,
     updated_at_ms = EXCLUDED.updated_at_ms
@@ -759,6 +810,7 @@ RETURNING id
         .bind(payload)
         .bind(chunk.first_seen_ms)
         .bind(chunk.last_seen_ms)
+        .bind(workspace)
         .fetch_one(&self.pool)
         .await
         .map_err(|e| map_db_error(&e))?;
@@ -988,6 +1040,7 @@ fn row_to_object_record(row: sqlx::postgres::PgRow) -> ObjectRecord {
         object_type: row.get("object_type"),
         id: row.get("id"),
         name: row.get("name"),
+        workspace: row.try_get("workspace").unwrap_or_default(),
         payload: row.get("payload"),
         created_at_ms: row.get("created_at_ms"),
         updated_at_ms: row.get("updated_at_ms"),
