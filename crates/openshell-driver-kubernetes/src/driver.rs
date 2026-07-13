@@ -1021,7 +1021,9 @@ impl KubernetesComputeDriver {
             }
         };
 
-        let tls = self.read_activation_tls().await;
+        // PoC: supervisor serves plain gRPC, skip mTLS for activation.
+        // Production will add TLS to the supervisor's activation endpoint.
+        let tls: Option<crate::activation_client::TlsConfig> = None;
 
         let sandbox_token = sandbox
             .spec
