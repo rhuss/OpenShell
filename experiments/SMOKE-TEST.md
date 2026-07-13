@@ -129,7 +129,7 @@ the OpenShell CLI and cluster access.
 
 ```shell
 # Login to the test cluster
-oc login -u admin -p '0p3nSh3ll-warm!' \
+oc login -u admin -p '<CLUSTER_PASSWORD>' \
   https://api.warm-pool-rerun.hkz1.p3.openshiftapps.com:443 \
   --insecure-skip-tls-verify
 
