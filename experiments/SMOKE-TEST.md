@@ -115,25 +115,85 @@ message ActivateSandboxRequest {
 
 A pre-configured ROSA HCP 4.22.3 cluster is available with everything
 already deployed (operator, OpenShell gateway, warm pool). You just need
-the code (for the proto files and smoke test script) and cluster access.
+the OpenShell CLI and cluster access.
+
+### What you need
+
+| Tool | Install |
+|---|---|
+| `oc` (OpenShift CLI) | [mirror.openshift.com](https://mirror.openshift.com/pub/openshift-v4/clients/ocp/latest/) |
+| `openshell` CLI | [github.com/NVIDIA/OpenShell](https://github.com/NVIDIA/OpenShell/releases) |
+| `grpcurl` (optional) | `brew install grpcurl` or `go install github.com/fullstorydev/grpcurl/cmd/grpcurl@latest` |
+
+### Step 1: Login and register the gateway
 
 ```shell
-# 1. Clone the fork and switch to the PoC branch
-git clone https://github.com/rhuss/OpenShell.git
-cd OpenShell
-git checkout 6113-warm-pool-grpc-poc
-
-# 2. Login to the test cluster (credentials shared separately)
-oc login -u admin -p '<password>' \
+# Login to the test cluster
+oc login -u admin -p '0p3nSh3ll-warm!' \
   https://api.warm-pool-rerun.hkz1.p3.openshiftapps.com:443 \
   --insecure-skip-tls-verify
 
-# 3. Verify cluster access and warm pool state
-oc whoami
-kubectl -n openshell get sandboxwarmpool openshell-grpc-pool
+# Extract mTLS certificates from the cluster
+GATEWAY_DIR=~/.config/openshell/gateways/k8s/mtls
+mkdir -p "$GATEWAY_DIR"
+kubectl -n openshell get secret openshell-client-tls \
+  -o jsonpath='{.data.ca\.crt}' | base64 -d > "$GATEWAY_DIR/ca.crt"
+kubectl -n openshell get secret openshell-client-tls \
+  -o jsonpath='{.data.tls\.crt}' | base64 -d > "$GATEWAY_DIR/tls.crt"
+kubectl -n openshell get secret openshell-client-tls \
+  -o jsonpath='{.data.tls\.key}' | base64 -d > "$GATEWAY_DIR/tls.key"
 
-# 4. Run the smoke test (pool already deployed, skip setup)
-./experiments/smoke-test.sh --skip-deploy
+# Register the gateway
+openshell gateway add \
+  --name k8s \
+  --local \
+  https://openshell-openshell.apps.rosa.warm-pool-rerun.hkz1.p3.openshiftapps.com
+
+# Select it as default
+openshell gateway select k8s
+```
+
+### Step 2: Verify warm pool is ready
+
+```shell
+kubectl -n openshell get sandboxwarmpool openshell-grpc-pool
+# Should show READY=3
+```
+
+### Step 3: See the difference (the demo)
+
+```shell
+# Warm pool: should complete in ~2-3 seconds
+time openshell sandbox create --name warm-demo --from base -- echo "hello from warm pool"
+
+# Delete the warm pool to force cold start
+kubectl -n openshell delete sandboxwarmpool openshell-grpc-pool
+
+# Cold start: should take ~14-18 seconds
+time openshell sandbox create --name cold-demo --from base -- echo "hello from cold start"
+
+# Restore the warm pool
+kubectl apply -f experiments/manifests/warm-pool-unidentified.yaml
+```
+
+Expected results: warm pool is 5-8x faster than cold start.
+
+### Step 4: Interactive SSH (optional)
+
+```shell
+# Drop into a shell inside a warm pool sandbox
+openshell sandbox create --name ssh-demo --from base
+# You're now in a bash shell inside the sandbox
+# Try: ls, whoami, cat /etc/hostname
+# Exit with: exit
+```
+
+### Step 5: Run the automated smoke test (optional)
+
+```shell
+git clone https://github.com/rhuss/OpenShell.git && cd OpenShell
+git checkout 6113-warm-pool-grpc-poc
+./experiments/smoke-test.sh --skip-deploy --runs 5
 ```
 
 Console: https://console-openshift-console.apps.rosa.warm-pool-rerun.hkz1.p3.openshiftapps.com
@@ -373,7 +433,9 @@ SUPERVISOR_IMAGE=your-registry/openshell-supervisor:warm-pool-poc \
   ./experiments/smoke-test.sh
 ```
 
-## Measured results (ROSA HCP 4.22.3, 2026-07-13)
+## Measured results
+
+### Milestone 1: gRPC activation only (2026-07-13)
 
 ```
 Run 1: claim=1412ms  activate=464ms  total=1876ms
@@ -385,4 +447,23 @@ Target:  <2000ms
 Verdict: PASS
 ```
 
-Compared to 16.7s cold start, this is an **8.8x improvement**.
+### Milestone 2: Full E2E with SSH via CLI (2026-07-13)
+
+Warm pool (with full bootstrap: networking + SSH + process stack):
+```
+Run 1: 2.686s
+Run 2: 2.716s
+```
+
+Cold start (no warm pool, same cluster with pre-pulled images):
+```
+Run 1: 14.000s
+Run 2: 18.776s
+Run 3: 16.140s
+```
+
+**Result: ~2.7s warm vs ~16.3s cold, a 6x improvement.**
+
+The warm pool path includes CLI overhead (~0.5s for TLS handshake,
+gateway routing, SSH relay setup) on top of the raw claim+activate
+time measured in Milestone 1.

@@ -73,6 +73,7 @@ struct BootstrapContext {
     process_enabled: bool,
     provider_credentials: ProviderCredentialState,
     provider_env: HashMap<String, String>,
+    loaded_policy_origin: Option<String>,
 }
 ```
 
@@ -101,6 +102,17 @@ After this change, it will additionally:
 3. Everything from phase 4 onward is replaced by building `BootstrapContext` and calling `post_identity_bootstrap()`
 
 The sidecar topology path (phases 2, 10) stays in `run_sandbox()` since warm pool doesn't use it. `post_identity_bootstrap()` receives a flag indicating combined vs sidecar topology.
+
+## Global Constraints
+
+Copied from the spec, these apply to every task:
+
+- **Language**: Rust edition 2021, workspace build
+- **Target platform**: Linux (sandbox pod runtime), macOS (compile check only)
+- **Cold-start invariant**: `run_sandbox()` must remain identical in behavior after refactoring; all existing tests pass without modification
+- **gRPC channel**: Plaintext gRPC for ActivateSandbox is acceptable for this PoC (mTLS deferred)
+- **Test cluster**: ROSA HCP 4.22.3 (`warm-pool-rerun`) with Agent Sandbox operator v0.9.0
+- **Image registry**: Custom supervisor/gateway images pushed to `quay.io/rhuss/`
 
 ## Project Structure
 
