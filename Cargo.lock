@@ -3826,6 +3826,9 @@ version = "0.0.0"
 dependencies = [
  "clap",
  "futures",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "miette",
  "nix",
  "openshell-core",

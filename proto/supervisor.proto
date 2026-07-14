@@ -1,0 +1,63 @@
+// SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+// Supervisor gRPC service definition for warm pool activation.
+//
+// This service is hosted BY the supervisor process (not the gateway).
+// The gateway calls ActivateSandbox on the supervisor after claiming
+// a warm pool pod to push identity and policy configuration.
+
+syntax = "proto3";
+
+package openshell.supervisor.v1;
+
+import "sandbox.proto";
+
+service Supervisor {
+  // ActivateSandbox pushes sandbox identity and policy to an unidentified
+  // supervisor running in a warm pool pod. The supervisor bootstraps fully
+  // (OPA compilation, gateway connection, entrypoint start) and returns
+  // success or failure.
+  rpc ActivateSandbox(ActivateSandboxRequest) returns (ActivateSandboxResponse);
+}
+
+message ActivateSandboxRequest {
+  // UUID of the sandbox being activated.
+  string sandbox_id = 1;
+
+  // Human-readable sandbox name.
+  string sandbox_name = 2;
+
+  // Gateway-minted JWT for this sandbox. The supervisor uses this token
+  // for all subsequent gateway RPCs (GetSandboxConfig, ConnectSupervisor, etc.)
+  // instead of exchanging a K8s SA token via IssueSandboxToken.
+  string sandbox_token = 3;
+
+  // Gateway gRPC endpoint (host:port) for the supervisor to connect back to.
+  string gateway_endpoint = 4;
+
+  // Full sandbox policy configuration. The supervisor compiles OPA rules
+  // from this at activation time.
+  openshell.sandbox.v1.SandboxPolicy policy = 5;
+}
+
+message ActivateSandboxResponse {
+  // Whether activation completed successfully.
+  bool success = 1;
+
+  // Human-readable error description (set when success is false).
+  string error_message = 2;
+
+  // Machine-readable error category (set when success is false).
+  ErrorCode error_code = 3;
+}
+
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+  ERROR_CODE_INVALID_REQUEST = 1;
+  ERROR_CODE_POLICY_COMPILATION_FAILED = 2;
+  ERROR_CODE_GATEWAY_UNREACHABLE = 3;
+  ERROR_CODE_TOKEN_INVALID = 4;
+  ERROR_CODE_ALREADY_ACTIVATED = 5;
+  ERROR_CODE_INTERNAL = 6;
+}

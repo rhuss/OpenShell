@@ -24,11 +24,16 @@ openshell-supervisor-process = { path = "../openshell-supervisor-process" }
 # Async runtime
 tokio = { workspace = true }
 
-# gRPC (tonic::Status downcast in error mapping)
-tonic = { workspace = true, features = ["channel", "tls-native-roots"] }
+# gRPC (server for warm pool activation, client for gateway connection)
+tonic = { workspace = true, features = ["channel", "transport", "tls-native-roots"] }
 
 # CLI
 clap = { workspace = true }
+
+# HTTP health endpoint
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+http-body-util = { workspace = true }
 
 # Error handling
 miette = { workspace = true }

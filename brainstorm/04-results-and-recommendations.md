@@ -8,10 +8,10 @@
 
 After the measurements are complete, we need to synthesize findings into a document that serves two audiences:
 
-1. **The OpenShell core team** (Derek, Murnal, Seth): What should OpenShell change to support warm pooling? Which approach from Issue #2157 is backed by data? What are the architectural constraints?
-2. **Our Red Hat team**: Is the upstream Agent Sandbox warm pooling viable for enterprise OpenShift deployments? What gaps exist in the Red Hat tech preview? What do we recommend for the beta timeline?
+1. **The OpenShell core team**: What should OpenShell change to support warm pooling? Which approach from Issue #2157 is backed by data? What are the architectural constraints?
+2. **The Red Hat integration team**: Is the upstream Agent Sandbox warm pooling viable for enterprise OpenShift deployments? What gaps exist in the Red Hat tech preview?
 
-The document should be concrete enough to inform Issue #2157's design decisions and the Peter Steinberger demo conversation (July 21st).
+The document should be concrete enough to inform Issue #2157's design decisions.
 
 ## Approaches Considered
 
@@ -38,7 +38,7 @@ Write the full report as a document, then distill key findings into a GitHub com
 
 ## Decision
 
-**Approach C: Full report plus GitHub comment.** The report lives in our Obsidian vault as a reference. A distilled comment on #2157 shares our findings with the upstream community and positions our work as a concrete contribution to the warm pooling discussion.
+**Approach C: Full report plus GitHub comment.** The report is published as a standalone RFC in `rfc/` (see clarification in spec.md). A distilled comment on #2157 can be posted as a follow-up step to share findings with the upstream community.
 
 ## Report Structure
 
@@ -96,14 +96,14 @@ Map findings to OpenShell's architecture:
 
 ### 6. Next Steps
 - Concrete list of upstream contributions (issues, PRs, RFCs)
-- Internal work items for the 60-day beta sprint
-- Demo plan for the Peter Steinberger meeting
+- Internal work items for the next sprint
+- Follow-up actions for stakeholder discussions
 
 ## Key Requirements
 
-1. **Report saved to Obsidian vault** at `~/Obsidian/ro14nd/09-Meeting-Notes/` with date prefix
-2. **GitHub comment on #2157** with distilled findings (use prose:check before posting)
-3. **No Google Drive links** in the GitHub comment (public repo rule from CLAUDE.md)
+1. **Report saved to the configured notes vault** with a date prefix
+2. **RFC in `rfc/`** as the canonical, version-controlled results document
+3. **No Google Drive links** in any public-facing artifacts
 4. **Data tables with raw numbers**, not just qualitative assessments
 5. **Clear recommendation** for the OpenShell core team, not just "it depends"
 
@@ -111,4 +111,3 @@ Map findings to OpenShell's architecture:
 
 - Should we also post findings to the upstream Agent Sandbox repo (e.g., as a discussion or issue comment on Issue #390)?
 - Should the report include a proposed RFC outline for OpenShell warm pooling, or is that a separate step?
-- How much of this should feed into Derek's demo prep for Peter Steinberger?

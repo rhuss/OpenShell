@@ -34,6 +34,72 @@ only when the set is already empty; any other outcome fails the spawn.
    sync, config polling, and log push.
 6. It launches the agent command as the restricted sandbox user.
 
+## Unidentified Mode (Warm Pool)
+
+The supervisor supports an alternative startup path for warm pool pods. When
+started with `--unidentified` (or `OPENSHELL_UNIDENTIFIED=true`), the supervisor
+skips the normal startup flow and enters a holding state with no sandbox
+identity, gateway connection, OPA policies, or agent process.
+
+In unidentified mode the supervisor exposes two endpoints:
+
+| Endpoint | Port | Purpose |
+|---|---|---|
+| gRPC `Supervisor` service | 9090 | Accepts `ActivateSandbox` calls from the gateway |
+| HTTP `/readyz` | configurable | Kubernetes readiness probe (200 when gRPC server is listening) |
+
+The gRPC service definition lives in `proto/supervisor.proto`. It has a single
+RPC, `ActivateSandbox`, which pushes identity and policy into the supervisor.
+
+### Activation Flow
+
+When the gateway claims a warm pool pod, it calls `ActivateSandbox` with the
+sandbox ID, name, a gateway-minted JWT, the gateway endpoint, and the full
+`SandboxPolicy` proto. The handler (`crates/openshell-sandbox/src/activation.rs`)
+proceeds through these steps:
+
+1. **Idempotency guard.** An `AtomicBool` ensures only one activation per
+   supervisor lifetime. A second call returns `ALREADY_ACTIVATED` immediately.
+2. **Request validation.** Rejects empty `sandbox_id`, `sandbox_token`,
+   `gateway_endpoint`, or missing `policy`. On validation failure the
+   idempotency flag resets so a corrected request can retry.
+3. **OCSF context initialization.** Sets the process-wide `SandboxContext` with
+   the newly received sandbox identity.
+4. **Bootstrap.** Calls `bootstrap_sandbox()` in `lib.rs`, which:
+   - Establishes a gRPC channel to the gateway using the provided JWT directly
+     (no K8s SA token exchange).
+   - Compiles OPA policies from the provided `SandboxPolicy` proto.
+   - Fetches the sandbox settings snapshot and provider environment from the
+     gateway (non-fatal if either fails).
+   - Spawns a `ConnectSupervisor` session to register the relay with the gateway.
+5. **Signal transition.** On success, sends the sandbox ID over a oneshot
+   channel. `run_unidentified()` receives this signal, logs the transition, and
+   returns, allowing the process to continue into active operation.
+
+If bootstrap fails, the idempotency flag resets so the gateway can retry with a
+corrected request.
+
+### Bootstrap Error Categories
+
+`BootstrapError` maps each failure to a machine-readable `ErrorCode` returned in
+the `ActivateSandboxResponse`:
+
+| Variant | Error Code | Meaning |
+|---|---|---|
+| `PolicyCompilation` | `POLICY_COMPILATION_FAILED` | OPA engine could not compile the provided policy |
+| `GatewayUnreachable` | `GATEWAY_UNREACHABLE` | gRPC channel to the gateway could not be established |
+| `TokenInvalid` | `TOKEN_INVALID` | The provided JWT was rejected |
+| `Internal` | `INTERNAL` | Catch-all for unexpected failures |
+
+### Observability
+
+Three OCSF `AppLifecycle` events bracket the activation:
+
+- **Start** (`ActivityId::Reset`, Informational) when `ActivateSandbox` begins.
+- **Success** (`ActivityId::Reset`, Informational) after bootstrap completes.
+- **Failure** (`ActivityId::Fail`, Medium) if bootstrap fails, paired with a
+  `DetectionFinding` event for the activation failure.
+
 ## Isolation Layers
 
 OpenShell uses overlapping controls rather than a single sandbox primitive:
