@@ -842,6 +842,12 @@ impl CachedOpenShellClient {
         self.workspace.get().cloned().unwrap_or_default()
     }
 
+    /// Pre-seed the workspace without polling. The value is ignored if the
+    /// workspace was already learned from `poll_settings`.
+    pub fn set_workspace(&self, workspace: String) {
+        let _ = self.workspace.set(workspace);
+    }
+
     /// Submit denial summaries and/or agent-authored proposals for policy analysis.
     ///
     /// Returns the gateway response so callers can surface accepted/rejected

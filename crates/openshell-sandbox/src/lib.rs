@@ -383,79 +383,10 @@ pub async fn run_sandbox(
         None
     };
 
-    #[cfg(target_os = "linux")]
-    let sidecar_control_server = if network_enabled && sidecar_network_enforcement {
-        if !matches!(policy.network.mode, NetworkMode::Proxy) {
-            return Err(miette::miette!(
-                "sidecar network enforcement requires proxy network mode"
-            ));
-        }
-        let socket = sidecar_control_socket().ok_or_else(|| {
-            miette::miette!(
-                "{} is required for sidecar topology",
-                openshell_core::sandbox_env::SIDECAR_CONTROL_SOCKET
-            )
-        })?;
-        let proto = retained_proto.as_ref().ok_or_else(|| {
-            miette::miette!(
-                "sidecar topology requires gateway policy data for the process supervisor"
-            )
-        })?;
-        let ca_paths = networking.as_ref().and_then(|n| n.ca_file_paths.clone());
-        Some(sidecar_control::spawn_server(
-            &socket,
-            sidecar_control::BootstrapData {
-                policy_proto: proto.clone(),
-                provider_env_revision: provider_credentials.snapshot().revision,
-                provider_child_env: provider_env.clone(),
-                proxy_ca_cert_path: ca_paths.as_ref().map(|paths| paths.0.clone()),
-                proxy_ca_bundle_path: ca_paths.as_ref().map(|paths| paths.1.clone()),
-            },
-            sidecar_expected_peer()?,
-        )?)
-    } else {
-        None
-    };
-    #[cfg(not(target_os = "linux"))]
-    let sidecar_control_server: Option<sidecar_control::ServerHandle> = None;
-
-    let sidecar_control_publisher = sidecar_control_server
-        .as_ref()
-        .map(sidecar_control::ServerHandle::publisher);
-
-    #[cfg(target_os = "linux")]
-    let mut sidecar_control_task = None;
-
-    #[cfg(target_os = "linux")]
-    if network_enabled
-        && sidecar_network_enforcement
-        && let Some(server) = sidecar_control_server
-    {
-        let trusted_ssh_socket_path = ssh_socket_path.clone().ok_or_else(|| {
-            miette::miette!(
-                "{} is required for sidecar network topology",
-                openshell_core::sandbox_env::SSH_SOCKET_PATH
-            )
-        })?;
-        let (entrypoint_rx, connection_task) = server.into_runtime_parts();
-        sidecar_control_task = Some(connection_task);
-        spawn_sidecar_entrypoint_handler(
-            entrypoint_rx,
-            entrypoint_pid.clone(),
-            opa_engine.clone(),
-            retained_proto.clone(),
-            openshell_endpoint.clone(),
-            sandbox_id.clone(),
-            std::path::PathBuf::from(trusted_ssh_socket_path),
-        );
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    if network_enabled && sidecar_network_enforcement {
-        return Err(miette::miette!(
-            "sidecar network enforcement is only supported on Linux"
-        ));
-    }
+    // Workspace watch: the policy poll loop learns the workspace from
+    // GetSandboxConfig and broadcasts it. Flush tasks read the current
+    // value so proposals target the correct workspace.
+    let (workspace_tx, workspace_rx) = tokio::sync::watch::channel(String::new());
 
     // Spawn the denial-aggregator flush task. The aggregator drains denial
     // events from the proxy + bypass monitor, batches them, and ships
@@ -474,15 +405,17 @@ pub async fn run_sandbox(
             .unwrap_or(10);
 
         let aggregator = denial_aggregator::DenialAggregator::new(rx, flush_interval_secs);
+        let denial_workspace_rx = workspace_rx.clone();
 
         tokio::spawn(async move {
             aggregator
                 .run(|summaries| {
                     let endpoint = agg_endpoint.clone();
                     let sandbox_name = agg_name.clone();
+                    let workspace = denial_workspace_rx.borrow().clone();
                     async move {
                         if let Err(e) =
-                            flush_proposals_to_gateway(&endpoint, &sandbox_name, summaries).await
+                            flush_proposals_to_gateway(&endpoint, &sandbox_name, &workspace, summaries).await
                         {
                             warn!(error = %e, "Failed to flush denial summaries to gateway");
                         }
@@ -508,15 +441,17 @@ pub async fn run_sandbox(
         );
 
         let aggregator = activity_aggregator::ActivityAggregator::new(rx, flush_interval_secs);
+        let activity_workspace_rx = workspace_rx.clone();
 
         tokio::spawn(async move {
             aggregator
                 .run(move |summary| {
                     let endpoint = agg_endpoint.clone();
                     let sandbox_name = agg_name.clone();
+                    let workspace = activity_workspace_rx.borrow().clone();
                     async move {
                         if let Err(e) =
-                            flush_activity_to_gateway(&endpoint, &sandbox_name, summary).await
+                            flush_activity_to_gateway(&endpoint, &sandbox_name, &workspace, summary).await
                         {
                             warn!(error = %e, "Failed to flush activity summary to gateway");
                         }
@@ -555,7 +490,7 @@ pub async fn run_sandbox(
             ocsf_enabled: poll_ocsf_enabled,
             provider_credentials: poll_provider_credentials,
             policy_local_ctx: poll_policy_local,
-            sidecar_control_publisher: sidecar_control_publisher.clone(),
+            workspace_tx,
         };
 
         tokio::spawn(async move {
@@ -972,12 +907,14 @@ fn process_policy_for_topology(
 async fn flush_proposals_to_gateway(
     endpoint: &str,
     sandbox_name: &str,
+    workspace: &str,
     summaries: Vec<denial_aggregator::FlushableDenialSummary>,
 ) -> Result<()> {
     use openshell_core::grpc_client::CachedOpenShellClient;
     use openshell_core::proto::{DenialSummary, L7RequestSample};
 
     let client = CachedOpenShellClient::connect(endpoint).await?;
+    client.set_workspace(workspace.to_string());
 
     let proto_summaries: Vec<DenialSummary> = summaries
         .into_iter()
@@ -1040,12 +977,14 @@ async fn flush_proposals_to_gateway(
 async fn flush_activity_to_gateway(
     endpoint: &str,
     sandbox_name: &str,
+    workspace: &str,
     summary: activity_aggregator::FlushableActivitySummary,
 ) -> Result<()> {
     use openshell_core::grpc_client::CachedOpenShellClient;
     use openshell_core::proto::{DenialGroupCount, NetworkActivitySummary};
 
     let client = CachedOpenShellClient::connect(endpoint).await?;
+    client.set_workspace(workspace.to_string());
 
     let proto_summary = NetworkActivitySummary {
         network_activity_count: summary.network_activity_count,
@@ -2366,7 +2305,7 @@ struct PolicyPollLoopContext {
     ocsf_enabled: Arc<std::sync::atomic::AtomicBool>,
     provider_credentials: ProviderCredentialState,
     policy_local_ctx: Option<Arc<openshell_supervisor_network::policy_local::PolicyLocalContext>>,
-    sidecar_control_publisher: Option<sidecar_control::Publisher>,
+    workspace_tx: tokio::sync::watch::Sender<String>,
 }
 
 async fn run_policy_poll_loop(ctx: PolicyPollLoopContext) -> Result<()> {
@@ -2399,33 +2338,36 @@ async fn run_policy_poll_loop(ctx: PolicyPollLoopContext) -> Result<()> {
     // policy revision the supervisor actually loaded. A mismatched result is
     // reconciled below instead of being recorded as already applied.
     match client.poll_settings(&ctx.sandbox_id).await {
-        Ok(result) => match initial_poll_disposition(&ctx.loaded_policy_origin, &result) {
-            InitialPollDisposition::Acknowledge(candidate) => {
-                apply_ocsf_json_setting(&ctx.ocsf_enabled, &result.settings);
-                current_config_revision = candidate.config_revision;
-                current_policy_hash.clone_from(&candidate.policy_hash);
-                current_settings = result.settings;
-                enqueue_policy_status(
-                    &status_sender,
-                    PolicyStatusUpdate::initial_loaded(&candidate),
-                );
-                debug!(
-                    config_revision = current_config_revision,
-                    "Settings poll: initial policy matches loaded revision"
-                );
+        Ok(result) => {
+            let _ = ctx.workspace_tx.send(client.workspace());
+            match initial_poll_disposition(&ctx.loaded_policy_origin, &result) {
+                InitialPollDisposition::Acknowledge(candidate) => {
+                    apply_ocsf_json_setting(&ctx.ocsf_enabled, &result.settings);
+                    current_config_revision = candidate.config_revision;
+                    current_policy_hash.clone_from(&candidate.policy_hash);
+                    current_settings = result.settings;
+                    enqueue_policy_status(
+                        &status_sender,
+                        PolicyStatusUpdate::initial_loaded(&candidate),
+                    );
+                    debug!(
+                        config_revision = current_config_revision,
+                        "Settings poll: initial policy matches loaded revision"
+                    );
+                }
+                InitialPollDisposition::Reconcile => pending_result = Some(result),
+                InitialPollDisposition::TrackOnly => {
+                    apply_ocsf_json_setting(&ctx.ocsf_enabled, &result.settings);
+                    current_config_revision = result.config_revision;
+                    current_policy_hash = result.policy_hash.clone();
+                    current_settings = result.settings;
+                    debug!(
+                        config_revision = current_config_revision,
+                        "Settings poll: tracking gateway config while preserving local policy override"
+                    );
+                }
             }
-            InitialPollDisposition::Reconcile => pending_result = Some(result),
-            InitialPollDisposition::TrackOnly => {
-                apply_ocsf_json_setting(&ctx.ocsf_enabled, &result.settings);
-                current_config_revision = result.config_revision;
-                current_policy_hash = result.policy_hash.clone();
-                current_settings = result.settings;
-                debug!(
-                    config_revision = current_config_revision,
-                    "Settings poll: tracking gateway config while preserving local policy override"
-                );
-            }
-        },
+        }
         Err(e) => {
             warn!(error = %e, "Settings poll: failed to fetch initial version, will retry");
         }

@@ -1705,7 +1705,7 @@ fn spawn_get_provider(app: &App, tx: mpsc::UnboundedSender<Event>) {
         Some(n) => n.to_string(),
         None => return,
     };
-    let workspace = app.current_workspace.clone();
+    let workspace = app.selected_provider_workspace();
 
     tokio::spawn(async move {
         let req = openshell_core::proto::GetProviderRequest { name, workspace };
@@ -1790,7 +1790,7 @@ fn spawn_delete_provider(app: &App, tx: mpsc::UnboundedSender<Event>) {
         Some(n) => n.to_string(),
         None => return,
     };
-    let workspace = app.current_workspace.clone();
+    let workspace = app.selected_provider_workspace();
 
     tokio::spawn(async move {
         let req = openshell_core::proto::DeleteProviderRequest { name, workspace };

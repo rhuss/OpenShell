@@ -2582,6 +2582,14 @@ impl App {
             .unwrap_or_else(|| self.current_workspace.clone())
     }
 
+    /// Get the workspace of the currently selected provider row.
+    pub fn selected_provider_workspace(&self) -> String {
+        self.provider_workspaces
+            .get(self.provider_selected)
+            .cloned()
+            .unwrap_or_else(|| self.current_workspace.clone())
+    }
+
     /// Get the name of the currently selected provider.
     pub fn selected_provider_name(&self) -> Option<&str> {
         self.provider_names
@@ -3011,6 +3019,28 @@ mod tests {
 
     #[test]
     fn selected_sandbox_workspace_falls_back_to_current() {
+        let workspaces: &[&str] = &[];
+        let selected: usize = 0;
+        let current = "default";
+
+        let result = workspaces.get(selected).unwrap_or(&current);
+        assert_eq!(*result, "default");
+    }
+
+    // -- selected_provider_workspace ----------------------------------------
+
+    #[test]
+    fn selected_provider_workspace_returns_per_row_value() {
+        let workspaces = ["default", "beta", "staging"];
+        let selected: usize = 1;
+        let current = "default";
+
+        let result = workspaces.get(selected).unwrap_or(&current);
+        assert_eq!(*result, "beta");
+    }
+
+    #[test]
+    fn selected_provider_workspace_falls_back_to_current() {
         let workspaces: &[&str] = &[];
         let selected: usize = 0;
         let current = "default";
