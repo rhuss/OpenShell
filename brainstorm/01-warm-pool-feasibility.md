@@ -42,7 +42,7 @@ Start with raw Agent Sandbox measurements (no OpenShell code changes), then laye
 
 1. **Fresh ROSA HCP cluster** provisioned via the ROSA plugin for consistent, isolated measurements
 2. **Red Hat build of Agent Sandbox operator** (tech preview) installed from OperatorHub for the extension CRDs
-3. **OpenShell deployed via Krzysztof's chart** (github.com/2000krysztof/Openshell-Openshift-Deploy) for fast setup
+3. **OpenShell deployed via the OpenShift deploy chart** (github.com/2000krysztof/Openshell-Openshift-Deploy) for fast setup
 4. **Baseline cold-start measurements** (vanilla sandbox creation, no pooling) as the control
 5. **Warm pool measurements** with varying configurations (readiness probe intervals, Pod Readiness Gates, sidecar readiness patterns)
 6. **Health check optimization experiments** including Knative-style readiness wrapping and KEP-580 Pod Readiness Gates
