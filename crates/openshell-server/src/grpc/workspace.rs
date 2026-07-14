@@ -63,6 +63,11 @@ fn validate_workspace_name(name: &str) -> Result<(), Status> {
             "workspace name must not start or end with a hyphen",
         ));
     }
+    if name.contains("--") {
+        return Err(Status::invalid_argument(
+            "workspace name must not contain consecutive hyphens",
+        ));
+    }
     Ok(())
 }
 
@@ -739,6 +744,12 @@ mod tests {
     #[test]
     fn validate_workspace_name_rejects_leading_hyphen() {
         let err = validate_workspace_name("-workspace").unwrap_err();
+        assert_eq!(err.code(), Code::InvalidArgument);
+    }
+
+    #[test]
+    fn validate_workspace_name_rejects_consecutive_hyphens() {
+        let err = validate_workspace_name("team--ml").unwrap_err();
         assert_eq!(err.code(), Code::InvalidArgument);
     }
 }

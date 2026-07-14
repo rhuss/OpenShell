@@ -725,7 +725,7 @@ class Sandbox:
     def __init__(
         self,
         *,
-        workspace: str = "default",
+        workspace: str,
         cluster: str | None = None,
         sandbox: str | SandboxRef | None = None,
         delete_on_exit: bool = True,

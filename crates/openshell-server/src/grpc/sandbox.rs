@@ -1433,7 +1433,7 @@ pub(super) async fn handle_create_ssh_session(
             SshSession::object_type(),
             &token,
             session.object_name(),
-            "",
+            session.object_workspace(),
             &session.encode_to_vec(),
             None,
             WriteCondition::MustCreate,

@@ -1305,6 +1305,7 @@ def test_sandbox_wrapper_forwards_auth_kwargs_to_from_active_cluster(
     )
 
     sandbox = Sandbox(
+        workspace="default",
         cluster="my-gw",
         timeout=42.0,
         auto_refresh=False,
@@ -1346,7 +1347,7 @@ def test_sandbox_wrapper_defaults_match_from_active_cluster(
     import pytest as _pytest
 
     with _pytest.raises(_Sentinel):
-        Sandbox().__enter__()
+        Sandbox(workspace="default").__enter__()
 
     assert captured["auto_refresh"] is True
     assert captured["write_back"] is True
@@ -1755,7 +1756,7 @@ def test_high_level_creation_forwards_name_and_labels(
 
 
 def test_high_level_attach_rejects_name() -> None:
-    sandbox = Sandbox(sandbox="existing-sandbox", name="job-1")
+    sandbox = Sandbox(workspace="default", sandbox="existing-sandbox", name="job-1")
 
     with pytest.raises(SandboxError):
         sandbox.__enter__()
@@ -1768,7 +1769,7 @@ def test_high_level_attach_rejects_labels() -> None:
         workspace="default",
         status=SandboxStatusRef(phase=2, current_policy_version=0),
     )
-    sandbox = Sandbox(sandbox=ref, labels={"aiq": "deep-research"})
+    sandbox = Sandbox(workspace="default", sandbox=ref, labels={"aiq": "deep-research"})
 
     with pytest.raises(SandboxError):
         sandbox.__enter__()

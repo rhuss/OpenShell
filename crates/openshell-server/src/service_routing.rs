@@ -100,26 +100,26 @@ pub fn parse_host(host: &str, config: &ServiceRoutingConfig) -> Option<(String, 
         let Some(encoded) = host.strip_suffix(&expected_suffix) else {
             continue;
         };
-        let parts: Vec<&str> = encoded.splitn(3, "--").collect();
-        return match parts.len() {
-            2 => {
-                if parts[0].is_empty() || parts[1].is_empty() {
-                    return None;
-                }
-                Some((parts[0].to_string(), parts[1].to_string(), String::new()))
+        let (workspace, rest) = encoded.split_once("--")?;
+        if workspace.is_empty() || workspace.contains("--") {
+            return None;
+        }
+        let (sandbox, service) = if let Some((sandbox, service)) = rest.split_once("--") {
+            if service.is_empty() || service.contains("--") {
+                return None;
             }
-            3 => {
-                if parts[0].is_empty() || parts[1].is_empty() || parts[2].is_empty() {
-                    return None;
-                }
-                Some((
-                    parts[0].to_string(),
-                    parts[1].to_string(),
-                    parts[2].to_string(),
-                ))
-            }
-            _ => None,
+            (sandbox, service)
+        } else {
+            (rest, "")
         };
+        if sandbox.is_empty() || sandbox.contains("--") {
+            return None;
+        }
+        return Some((
+            workspace.to_string(),
+            sandbox.to_string(),
+            service.to_string(),
+        ));
     }
     None
 }
@@ -1002,6 +1002,28 @@ mod tests {
                 "my-sandbox".to_string(),
                 "web".to_string()
             ))
+        );
+    }
+
+    #[test]
+    fn rejects_consecutive_hyphens_in_workspace() {
+        assert_eq!(
+            parse_host(
+                "team--ml--my-sandbox--web.dev.openshell.localhost",
+                &config()
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_consecutive_hyphens_in_service() {
+        assert_eq!(
+            parse_host(
+                "default--my-sandbox--web--app.dev.openshell.localhost",
+                &config()
+            ),
+            None
         );
     }
 

@@ -115,6 +115,26 @@ pub(super) fn validate_sandbox_spec(
             name.len()
         )));
     }
+    if !name.is_empty() {
+        if !name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        {
+            return Err(Status::invalid_argument(
+                "name must contain only lowercase alphanumeric characters or hyphens",
+            ));
+        }
+        if name.starts_with('-') || name.ends_with('-') {
+            return Err(Status::invalid_argument(
+                "name must not start or end with a hyphen",
+            ));
+        }
+        if name.contains("--") {
+            return Err(Status::invalid_argument(
+                "name must not contain consecutive hyphens",
+            ));
+        }
+    }
 
     // --- spec.providers ---
     if spec.providers.len() > MAX_PROVIDERS {
@@ -869,6 +889,29 @@ mod tests {
         let err = validate_sandbox_spec(&name, &default_spec()).unwrap_err();
         assert_eq!(err.code(), Code::InvalidArgument);
         assert!(err.message().contains("name"));
+    }
+
+    #[test]
+    fn validate_sandbox_spec_rejects_uppercase_name() {
+        let err = validate_sandbox_spec("MySandbox", &default_spec()).unwrap_err();
+        assert_eq!(err.code(), Code::InvalidArgument);
+    }
+
+    #[test]
+    fn validate_sandbox_spec_rejects_leading_hyphen_name() {
+        let err = validate_sandbox_spec("-sandbox", &default_spec()).unwrap_err();
+        assert_eq!(err.code(), Code::InvalidArgument);
+    }
+
+    #[test]
+    fn validate_sandbox_spec_rejects_consecutive_hyphens_name() {
+        let err = validate_sandbox_spec("my--sandbox", &default_spec()).unwrap_err();
+        assert_eq!(err.code(), Code::InvalidArgument);
+    }
+
+    #[test]
+    fn validate_sandbox_spec_accepts_single_hyphens_name() {
+        assert!(validate_sandbox_spec("my-sandbox", &default_spec()).is_ok());
     }
 
     #[test]

@@ -269,7 +269,7 @@ impl ObjectWorkspace for StoredProviderCredentialRefreshState {
         self.metadata.as_ref().map_or("", |m| m.workspace.as_str())
     }
     fn requires_workspace() -> bool {
-        false
+        true
     }
 }
 
