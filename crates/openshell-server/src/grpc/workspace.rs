@@ -15,7 +15,7 @@ use openshell_core::proto::{
     GetWorkspaceResponse, InferenceRoute, ListWorkspaceMembersRequest,
     ListWorkspaceMembersResponse, ListWorkspacesRequest, ListWorkspacesResponse, Provider,
     RemoveWorkspaceMemberRequest, RemoveWorkspaceMemberResponse, Sandbox, ServiceEndpoint,
-    StoredProviderProfile, Workspace, WorkspaceMember, WorkspaceRole,
+    SshSession, StoredProviderProfile, Workspace, WorkspaceMember, WorkspaceRole,
 };
 use prost::Message;
 use tonic::{Request, Response, Status};
@@ -220,6 +220,7 @@ pub(super) async fn handle_delete_workspace(
         (StoredProviderProfile::object_type(), "provider profile"),
         (ServiceEndpoint::object_type(), "service"),
         (InferenceRoute::object_type(), "inference route"),
+        (SshSession::object_type(), "ssh session"),
     ] {
         let records = state
             .store
@@ -459,6 +460,52 @@ mod tests {
         .unwrap()
         .into_inner();
         assert!(resp.deleted);
+    }
+
+    #[tokio::test]
+    async fn delete_workspace_blocked_by_ssh_session() {
+        let state = test_server_state().await;
+
+        handle_create_workspace(
+            &state,
+            Request::new(CreateWorkspaceRequest {
+                name: "sessioned".to_string(),
+                labels: HashMap::new(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let session = SshSession {
+            metadata: Some(ObjectMeta {
+                id: "ssh-1".to_string(),
+                name: "session-ssh-1".to_string(),
+                created_at_ms: 1_000_000,
+                labels: HashMap::new(),
+                resource_version: 0,
+                workspace: "sessioned".to_string(),
+            }),
+            sandbox_id: "sbx-1".to_string(),
+            token: "ssh-1".to_string(),
+            revoked: false,
+            expires_at_ms: 0,
+        };
+        state.store.put_message(&session).await.unwrap();
+
+        let err = handle_delete_workspace(
+            &state,
+            Request::new(DeleteWorkspaceRequest {
+                name: "sessioned".to_string(),
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code(), Code::FailedPrecondition);
+        assert!(
+            err.message().contains("ssh session"),
+            "error should name ssh session as blocker: {}",
+            err.message()
+        );
     }
 
     #[tokio::test]
