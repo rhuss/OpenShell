@@ -274,16 +274,24 @@ pub(super) async fn handle_list_sandboxes(
     let limit = clamp_limit(request.limit, 100, MAX_PAGE_SIZE);
 
     let sandboxes: Vec<Sandbox> = if request.all_workspaces {
-        if !request.label_selector.is_empty() {
-            return Err(Status::invalid_argument(
-                "label_selector is not supported with all_workspaces",
-            ));
+        if request.label_selector.is_empty() {
+            state
+                .store
+                .list_all_messages(limit, request.offset)
+                .await
+                .map_err(|e| Status::internal(format!("list sandboxes failed: {e}")))?
+        } else {
+            crate::grpc::validation::validate_label_selector(&request.label_selector)?;
+            state
+                .store
+                .list_all_messages_with_selector(
+                    &request.label_selector,
+                    limit,
+                    request.offset,
+                )
+                .await
+                .map_err(|e| Status::internal(format!("list sandboxes failed: {e}")))?
         }
-        state
-            .store
-            .list_all_messages(limit, request.offset)
-            .await
-            .map_err(|e| Status::internal(format!("list sandboxes failed: {e}")))?
     } else {
         let workspace =
             super::workspace::resolve_workspace(state.store.as_ref(), &request.workspace).await?;

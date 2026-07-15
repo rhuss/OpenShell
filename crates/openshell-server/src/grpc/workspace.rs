@@ -45,30 +45,7 @@ fn validate_workspace_name(name: &str) -> Result<(), Status> {
     if name.is_empty() {
         return Err(Status::invalid_argument("workspace name is required"));
     }
-    if name.len() > 63 {
-        return Err(Status::invalid_argument(
-            "workspace name must be 63 characters or fewer",
-        ));
-    }
-    if !name
-        .chars()
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-    {
-        return Err(Status::invalid_argument(
-            "workspace name must contain only lowercase alphanumeric characters or hyphens",
-        ));
-    }
-    if name.starts_with('-') || name.ends_with('-') {
-        return Err(Status::invalid_argument(
-            "workspace name must not start or end with a hyphen",
-        ));
-    }
-    if name.contains("--") {
-        return Err(Status::invalid_argument(
-            "workspace name must not contain consecutive hyphens",
-        ));
-    }
-    Ok(())
+    super::validation::validate_dns1123_label(name, "workspace name")
 }
 
 /// Resolve and validate a workspace name from a request field.
@@ -240,25 +217,11 @@ pub(super) async fn handle_delete_workspace(
     }
 
     // Clean up membership records before deleting the workspace itself.
-    let members: Vec<WorkspaceMember> = state
+    state
         .store
-        .list_messages(&name, MAX_WORKSPACE_MEMBERS, 0)
+        .delete_all_in_workspace(WorkspaceMember::object_type(), &name)
         .await
-        .map_err(|e| Status::internal(format!("list workspace members failed: {e}")))?;
-    for member in &members {
-        if let Some(meta) = &member.metadata {
-            state
-                .store
-                .delete(WorkspaceMember::object_type(), &meta.id)
-                .await
-                .map_err(|e| {
-                    Status::internal(format!(
-                        "delete workspace member '{}' failed: {e}",
-                        meta.name
-                    ))
-                })?;
-        }
-    }
+        .map_err(|e| Status::internal(format!("delete workspace members failed: {e}")))?;
 
     let deleted = state
         .store
@@ -288,12 +251,12 @@ pub(super) async fn handle_add_workspace_member(
         ));
     }
 
-    let existing: Vec<WorkspaceMember> = state
+    let count = state
         .store
-        .list_messages(&workspace, MAX_WORKSPACE_MEMBERS, 0)
+        .count_in_workspace(WorkspaceMember::object_type(), &workspace)
         .await
-        .map_err(|e| Status::internal(format!("list workspace members failed: {e}")))?;
-    if existing.len() >= MAX_WORKSPACE_MEMBERS as usize {
+        .map_err(|e| Status::internal(format!("count workspace members failed: {e}")))?;
+    if count >= u64::from(MAX_WORKSPACE_MEMBERS) {
         return Err(Status::resource_exhausted(format!(
             "workspace has reached the maximum of {MAX_WORKSPACE_MEMBERS} members"
         )));

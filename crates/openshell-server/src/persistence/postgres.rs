@@ -348,6 +348,38 @@ WHERE object_type = $1 AND workspace = $2 AND name = $3
         Ok(result.rows_affected() > 0)
     }
 
+    pub async fn count_in_workspace(
+        &self,
+        object_type: &str,
+        workspace: &str,
+    ) -> PersistenceResult<u64> {
+        let row: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM objects WHERE object_type = $1 AND workspace = $2",
+        )
+        .bind(object_type)
+        .bind(workspace)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| map_db_error(&e))?;
+        Ok(row.0 as u64)
+    }
+
+    pub async fn delete_all_in_workspace(
+        &self,
+        object_type: &str,
+        workspace: &str,
+    ) -> PersistenceResult<u64> {
+        let result = sqlx::query(
+            "DELETE FROM objects WHERE object_type = $1 AND workspace = $2",
+        )
+        .bind(object_type)
+        .bind(workspace)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| map_db_error(&e))?;
+        Ok(result.rows_affected())
+    }
+
     pub async fn delete_by_name(
         &self,
         object_type: &str,
@@ -470,6 +502,39 @@ LIMIT $4 OFFSET $5
         )
         .bind(object_type)
         .bind(workspace)
+        .bind(&labels_jsonb)
+        .bind(i64::from(limit))
+        .bind(i64::from(offset))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| map_db_error(&e))?;
+
+        Ok(rows.into_iter().map(row_to_object_record).collect())
+    }
+
+    pub async fn list_all_with_selector(
+        &self,
+        object_type: &str,
+        label_selector: &str,
+        limit: u32,
+        offset: u32,
+    ) -> PersistenceResult<Vec<ObjectRecord>> {
+        use super::parse_label_selector;
+
+        let required_labels = parse_label_selector(label_selector)?;
+        let labels_jsonb = serde_json::to_value(&required_labels)
+            .map_err(|e| PersistenceError::Encode(format!("failed to serialize labels: {e}")))?;
+
+        let rows = sqlx::query(
+            r"
+SELECT object_type, id, name, workspace, payload, created_at_ms, updated_at_ms, labels, resource_version
+FROM objects
+WHERE object_type = $1 AND labels @> $2
+ORDER BY created_at_ms ASC, name ASC
+LIMIT $3 OFFSET $4
+",
+        )
+        .bind(object_type)
         .bind(&labels_jsonb)
         .bind(i64::from(limit))
         .bind(i64::from(offset))

@@ -304,6 +304,24 @@ impl Store {
         store_dispatch!(self.delete(object_type, id))
     }
 
+    /// Count objects of a given type within a workspace.
+    pub async fn count_in_workspace(
+        &self,
+        object_type: &str,
+        workspace: &str,
+    ) -> PersistenceResult<u64> {
+        store_dispatch!(self.count_in_workspace(object_type, workspace))
+    }
+
+    /// Delete all objects of a given type within a workspace.
+    pub async fn delete_all_in_workspace(
+        &self,
+        object_type: &str,
+        workspace: &str,
+    ) -> PersistenceResult<u64> {
+        store_dispatch!(self.delete_all_in_workspace(object_type, workspace))
+    }
+
     /// Delete an object by name within an object type and workspace.
     pub async fn delete_by_name(
         &self,
@@ -336,6 +354,9 @@ impl Store {
     }
 
     /// List objects by type and application-owned scope.
+    ///
+    /// Workspace filtering is intentionally omitted: scope values are sandbox
+    /// UUIDs which are globally unique. Revisit if non-UUID scopes are introduced.
     pub async fn list_by_scope(
         &self,
         object_type: &str,
@@ -359,6 +380,22 @@ impl Store {
         store_dispatch!(self.list_with_selector(
             object_type,
             workspace,
+            label_selector,
+            limit,
+            offset
+        ))
+    }
+
+    /// List objects by type across all workspaces with label selector filtering.
+    pub async fn list_all_with_selector(
+        &self,
+        object_type: &str,
+        label_selector: &str,
+        limit: u32,
+        offset: u32,
+    ) -> PersistenceResult<Vec<ObjectRecord>> {
+        store_dispatch!(self.list_all_with_selector(
+            object_type,
             label_selector,
             limit,
             offset
@@ -450,6 +487,24 @@ impl Store {
         offset: u32,
     ) -> PersistenceResult<Vec<T>> {
         self.list_by_type(T::object_type(), limit, offset)
+            .await?
+            .into_iter()
+            .map(decode_record)
+            .collect()
+    }
+
+    /// List and decode protobuf messages across all workspaces with label
+    /// selector filtering, hydrating `resource_version` from the authoritative
+    /// DB row.
+    pub async fn list_all_messages_with_selector<
+        T: Message + Default + ObjectType + SetResourceVersion,
+    >(
+        &self,
+        label_selector: &str,
+        limit: u32,
+        offset: u32,
+    ) -> PersistenceResult<Vec<T>> {
+        self.list_all_with_selector(T::object_type(), label_selector, limit, offset)
             .await?
             .into_iter()
             .map(decode_record)

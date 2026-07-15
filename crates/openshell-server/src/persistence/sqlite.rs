@@ -372,6 +372,44 @@ WHERE "object_type" = ?1 AND "id" = ?2
         Ok(result.rows_affected() > 0)
     }
 
+    pub async fn count_in_workspace(
+        &self,
+        object_type: &str,
+        workspace: &str,
+    ) -> PersistenceResult<u64> {
+        let row: (i64,) = sqlx::query_as(
+            r#"
+SELECT COUNT(*) FROM "objects"
+WHERE "object_type" = ?1 AND "workspace" = ?2
+"#,
+        )
+        .bind(object_type)
+        .bind(workspace)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| map_db_error(&e))?;
+        Ok(row.0 as u64)
+    }
+
+    pub async fn delete_all_in_workspace(
+        &self,
+        object_type: &str,
+        workspace: &str,
+    ) -> PersistenceResult<u64> {
+        let result = sqlx::query(
+            r#"
+DELETE FROM "objects"
+WHERE "object_type" = ?1 AND "workspace" = ?2
+"#,
+        )
+        .bind(object_type)
+        .bind(workspace)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| map_db_error(&e))?;
+        Ok(result.rows_affected())
+    }
+
     pub async fn delete_by_name(
         &self,
         object_type: &str,
@@ -483,6 +521,36 @@ LIMIT ?3 OFFSET ?4
 
         let required_labels = parse_label_selector(label_selector)?;
         let all_records = self.list(object_type, workspace, u32::MAX, 0).await?;
+
+        let filtered: Vec<ObjectRecord> = all_records
+            .into_iter()
+            .filter(|record| {
+                let labels_json = record.labels.as_deref().unwrap_or("{}");
+                let labels: std::collections::HashMap<String, String> =
+                    serde_json::from_str(labels_json).unwrap_or_default();
+
+                required_labels
+                    .iter()
+                    .all(|(key, value)| labels.get(key).is_some_and(|v| v == value))
+            })
+            .skip(offset as usize)
+            .take(limit as usize)
+            .collect();
+
+        Ok(filtered)
+    }
+
+    pub async fn list_all_with_selector(
+        &self,
+        object_type: &str,
+        label_selector: &str,
+        limit: u32,
+        offset: u32,
+    ) -> PersistenceResult<Vec<ObjectRecord>> {
+        use super::parse_label_selector;
+
+        let required_labels = parse_label_selector(label_selector)?;
+        let all_records = self.list_by_type(object_type, u32::MAX, 0).await?;
 
         let filtered: Vec<ObjectRecord> = all_records
             .into_iter()

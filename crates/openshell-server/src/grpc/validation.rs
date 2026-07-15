@@ -98,6 +98,46 @@ pub(super) fn reject_newline_chars(value: &str, field_name: &str) -> Result<(), 
 }
 
 // ---------------------------------------------------------------------------
+// DNS-1123 label validation
+// ---------------------------------------------------------------------------
+
+/// Validate that a string conforms to DNS-1123 label rules: lowercase
+/// alphanumeric and hyphens, no leading/trailing hyphens, no consecutive
+/// hyphens, max 63 characters. `field` is used in error messages.
+///
+/// Empty names are allowed (the caller decides whether empty is valid).
+pub(super) fn validate_dns1123_label(name: &str, field: &str) -> Result<(), Status> {
+    if name.is_empty() {
+        return Ok(());
+    }
+    if name.len() > MAX_NAME_LEN {
+        return Err(Status::invalid_argument(format!(
+            "{field} exceeds maximum length ({} > {MAX_NAME_LEN})",
+            name.len()
+        )));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    {
+        return Err(Status::invalid_argument(format!(
+            "{field} must contain only lowercase alphanumeric characters or hyphens",
+        )));
+    }
+    if name.starts_with('-') || name.ends_with('-') {
+        return Err(Status::invalid_argument(format!(
+            "{field} must not start or end with a hyphen",
+        )));
+    }
+    if name.contains("--") {
+        return Err(Status::invalid_argument(format!(
+            "{field} must not contain consecutive hyphens",
+        )));
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Sandbox spec validation
 // ---------------------------------------------------------------------------
 
@@ -109,32 +149,7 @@ pub(super) fn validate_sandbox_spec(
     spec: &openshell_core::proto::SandboxSpec,
 ) -> Result<(), Status> {
     // --- request.name ---
-    if name.len() > MAX_NAME_LEN {
-        return Err(Status::invalid_argument(format!(
-            "name exceeds maximum length ({} > {MAX_NAME_LEN})",
-            name.len()
-        )));
-    }
-    if !name.is_empty() {
-        if !name
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-        {
-            return Err(Status::invalid_argument(
-                "name must contain only lowercase alphanumeric characters or hyphens",
-            ));
-        }
-        if name.starts_with('-') || name.ends_with('-') {
-            return Err(Status::invalid_argument(
-                "name must not start or end with a hyphen",
-            ));
-        }
-        if name.contains("--") {
-            return Err(Status::invalid_argument(
-                "name must not contain consecutive hyphens",
-            ));
-        }
-    }
+    validate_dns1123_label(name, "name")?;
 
     // --- spec.providers ---
     if spec.providers.len() > MAX_PROVIDERS {
