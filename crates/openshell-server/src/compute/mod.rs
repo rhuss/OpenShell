@@ -3233,7 +3233,7 @@ mod tests {
                 SANDBOX_SETTINGS_OBJECT_TYPE,
                 "settings-sb-1",
                 sandbox.object_name(),
-                "",
+                sandbox.object_workspace(),
                 br#"{"revision":1,"settings":{}}"#,
                 None,
             )
@@ -3266,7 +3266,7 @@ mod tests {
         assert!(
             runtime
                 .store
-                .get_by_name(SANDBOX_SETTINGS_OBJECT_TYPE, "", sandbox.object_name())
+                .get_by_name(SANDBOX_SETTINGS_OBJECT_TYPE, sandbox.object_workspace(), sandbox.object_name())
                 .await
                 .unwrap()
                 .is_none()
