@@ -1081,6 +1081,7 @@ mod tests {
             credentials: std::iter::once((key_name.to_string(), key_value.to_string())).collect(),
             config: std::collections::HashMap::new(),
             credential_expires_at_ms: std::collections::HashMap::new(),
+            profile_workspace: String::new(),
         }
     }
 
@@ -1192,6 +1193,7 @@ mod tests {
             ))
             .collect(),
             credential_expires_at_ms: std::collections::HashMap::new(),
+            profile_workspace: String::new(),
         };
         store
             .put_message(&provider)
@@ -1264,6 +1266,7 @@ mod tests {
             // Intentionally no BEDROCK_BASE_URL.
             config: std::collections::HashMap::new(),
             credential_expires_at_ms: std::collections::HashMap::new(),
+            profile_workspace: String::new(),
         };
         store
             .put_message(&provider)
@@ -1313,6 +1316,7 @@ mod tests {
             ))
             .collect(),
             credential_expires_at_ms: std::collections::HashMap::new(),
+            profile_workspace: String::new(),
         };
         store
             .put_message(&provider)
@@ -1541,6 +1545,7 @@ mod tests {
             ))
             .collect(),
             credential_expires_at_ms: std::collections::HashMap::new(),
+            profile_workspace: String::new(),
         };
         store
             .put_message(&provider)
@@ -1617,6 +1622,7 @@ mod tests {
                 .collect(),
             config: provider.config.clone(),
             credential_expires_at_ms: provider.credential_expires_at_ms.clone(),
+            profile_workspace: provider.profile_workspace.clone(),
         };
         store
             .put_message(&rotated_provider)
@@ -1685,6 +1691,7 @@ mod tests {
             .into_iter()
             .collect(),
             credential_expires_at_ms: std::collections::HashMap::new(),
+            profile_workspace: String::new(),
         };
         store
             .put_message(&provider)
@@ -2020,6 +2027,7 @@ mod tests {
             .collect(),
             config,
             credential_expires_at_ms: std::collections::HashMap::new(),
+            profile_workspace: String::new(),
         }
     }
 
@@ -3104,6 +3112,7 @@ mod tests {
             .collect(),
             config: std::collections::HashMap::new(),
             credential_expires_at_ms: std::collections::HashMap::new(),
+            profile_workspace: String::new(),
         };
         store
             .put_message(&alpha_provider)
@@ -3127,6 +3136,7 @@ mod tests {
             .collect(),
             config: std::collections::HashMap::new(),
             credential_expires_at_ms: std::collections::HashMap::new(),
+            profile_workspace: String::new(),
         };
         store
             .put_message(&beta_provider)

@@ -104,8 +104,18 @@ pub(super) async fn create_provider_record(
     if provider.r#type.trim().is_empty() {
         return Err(Status::invalid_argument("provider.type is required"));
     }
+    if !provider.profile_workspace.is_empty() && provider.profile_workspace != workspace {
+        return Err(Status::invalid_argument(
+            "profile_workspace must be empty (global) or match the provider workspace",
+        ));
+    }
+    let profile_ws = if provider.profile_workspace.is_empty() {
+        ""
+    } else {
+        workspace
+    };
     if provider.credentials.is_empty()
-        && !provider_type_allows_empty_credentials(store, workspace, &provider.r#type).await?
+        && !provider_type_allows_empty_credentials(store, profile_ws, &provider.r#type).await?
     {
         return Err(Status::invalid_argument(
             "provider.credentials must not be empty",
@@ -228,6 +238,13 @@ pub(super) async fn update_provider_record_with_catalog(
     if !incoming_type.is_empty() && !incoming_type.eq_ignore_ascii_case(existing.r#type.trim()) {
         return Err(Status::invalid_argument(
             "provider type cannot be changed; delete and recreate the provider",
+        ));
+    }
+    if !provider.profile_workspace.is_empty()
+        && provider.profile_workspace != existing.profile_workspace
+    {
+        return Err(Status::invalid_argument(
+            "profile_workspace cannot be changed; delete and recreate the provider",
         ));
     }
 
@@ -575,7 +592,9 @@ pub(super) async fn resolve_dynamic_credentials_with_catalog(
 
         let profile_id =
             normalize_provider_type(&provider.r#type).unwrap_or(provider.r#type.as_str());
-        let Some(profile) = get_provider_type_profile(store, workspace, profile_id).await? else {
+        let Some(profile) =
+            get_provider_type_profile(store, &provider.profile_workspace, profile_id).await?
+        else {
             continue;
         };
 
@@ -995,12 +1014,14 @@ struct DynamicTokenGrantBinding {
 
 async fn dynamic_token_grant_bindings_for_provider(
     store: &Store,
-    workspace: &str,
+    _workspace: &str,
     provider: &Provider,
 ) -> Vec<DynamicTokenGrantBinding> {
     let provider_name = provider.object_name().to_string();
     let profile_id = normalize_provider_type(&provider.r#type).unwrap_or(provider.r#type.as_str());
-    let Some(profile) = get_provider_type_profile(store, workspace, profile_id).await? else {
+    let Some(profile) =
+        get_provider_type_profile(store, &provider.profile_workspace, profile_id).await?
+    else {
         return Ok(Vec::new());
     };
     dynamic_token_grant_bindings_for_profile(&provider_name, &profile.to_proto())
@@ -1619,11 +1640,13 @@ pub(super) async fn get_provider_type_profile(
 
 async fn provider_refresh_defaults(
     store: &Store,
-    workspace: &str,
+    _workspace: &str,
     provider: &Provider,
     credential_key: &str,
 ) -> Result<Option<CredentialRefreshProfile>, Status> {
-    let Some(profile) = get_provider_type_profile(store, workspace, &provider.r#type).await? else {
+    let Some(profile) =
+        get_provider_type_profile(store, &provider.profile_workspace, &provider.r#type).await?
+    else {
         return Ok(None);
     };
     Ok(profile
@@ -2328,6 +2351,7 @@ pub(super) async fn handle_configure_provider_refresh(
                 credential_key.to_string(),
                 expires_at_ms,
             )]),
+            profile_workspace: String::new(),
         };
         update_provider_record(state.store.as_ref(), &workspace, updated).await?;
     }
@@ -2435,6 +2459,7 @@ pub(super) async fn handle_delete_provider_refresh(
                 credential_key.to_string(),
                 0,
             )]),
+            profile_workspace: String::new(),
         };
         update_provider_record(state.store.as_ref(), &workspace, updated).await?;
     }
@@ -2728,6 +2753,7 @@ mod tests {
                 credentials: HashMap::new(),
                 config: HashMap::new(),
                 credential_expires_at_ms: HashMap::new(),
+                profile_workspace: "default".to_string(),
             },
         )
         .await
@@ -3207,6 +3233,7 @@ mod tests {
             .into_iter()
             .collect(),
             credential_expires_at_ms: HashMap::new(),
+            profile_workspace: "default".to_string(),
         }
     }
 
@@ -3878,6 +3905,7 @@ mod tests {
                 .collect(),
                 config: HashMap::new(),
                 credential_expires_at_ms: HashMap::new(),
+                profile_workspace: "default".to_string(),
             },
         )
         .await
@@ -4129,6 +4157,7 @@ mod tests {
                 .collect(),
                 config: HashMap::new(),
                 credential_expires_at_ms: HashMap::new(),
+                profile_workspace: "default".to_string(),
             },
         )
         .await
@@ -4195,6 +4224,7 @@ mod tests {
                 .collect(),
                 config: HashMap::new(),
                 credential_expires_at_ms: HashMap::new(),
+                profile_workspace: "default".to_string(),
             },
         )
         .await
@@ -4240,6 +4270,7 @@ mod tests {
                     "MS_GRAPH_ACCESS_TOKEN".to_string(),
                     manual_expires_at_ms,
                 )]),
+                profile_workspace: "default".to_string(),
             },
         )
         .await
@@ -4296,6 +4327,7 @@ mod tests {
                 .collect(),
                 config: HashMap::new(),
                 credential_expires_at_ms: HashMap::new(),
+                profile_workspace: "default".to_string(),
             },
         )
         .await
@@ -4317,6 +4349,7 @@ mod tests {
                     .collect(),
                 config: HashMap::new(),
                 credential_expires_at_ms: HashMap::new(),
+                profile_workspace: "default".to_string(),
             },
         )
         .await
@@ -4390,6 +4423,7 @@ mod tests {
                     credentials: HashMap::new(),
                     config: HashMap::new(),
                     credential_expires_at_ms: HashMap::new(),
+                    profile_workspace: "default".to_string(),
                 },
             )
             .await
@@ -4484,6 +4518,7 @@ mod tests {
                 .collect(),
                 config: HashMap::new(),
                 credential_expires_at_ms: HashMap::new(),
+                profile_workspace: "default".to_string(),
             },
         )
         .await
@@ -4555,6 +4590,7 @@ mod tests {
                 .collect(),
                 config: HashMap::new(),
                 credential_expires_at_ms: HashMap::new(),
+                profile_workspace: "default".to_string(),
             },
         )
         .await
@@ -4720,6 +4756,7 @@ mod tests {
                 config: std::iter::once(("endpoint".to_string(), "https://gitlab.com".to_string()))
                     .collect(),
                 credential_expires_at_ms: HashMap::new(),
+                profile_workspace: "default".to_string(),
             },
         )
         .await
@@ -4896,6 +4933,7 @@ mod tests {
                 .collect(),
                 config: HashMap::new(),
                 credential_expires_at_ms: HashMap::new(),
+                profile_workspace: "default".to_string(),
             },
         )
         .await
@@ -4927,6 +4965,7 @@ mod tests {
                 .collect(),
                 config: HashMap::new(),
                 credential_expires_at_ms: HashMap::new(),
+                profile_workspace: "default".to_string(),
             },
         )
         .await
@@ -4959,6 +4998,7 @@ mod tests {
                 credentials: HashMap::new(),
                 config: HashMap::new(),
                 credential_expires_at_ms: HashMap::new(),
+                profile_workspace: "default".to_string(),
             },
         )
         .await
@@ -4981,6 +5021,7 @@ mod tests {
                 credentials: HashMap::new(),
                 config: HashMap::new(),
                 credential_expires_at_ms: HashMap::new(),
+                profile_workspace: "default".to_string(),
             },
         )
         .await
@@ -5059,6 +5100,7 @@ mod tests {
                 credentials: HashMap::new(),
                 config: HashMap::new(),
                 credential_expires_at_ms: HashMap::new(),
+                profile_workspace: "default".to_string(),
             },
         )
         .await
@@ -5098,6 +5140,7 @@ mod tests {
                 credentials: HashMap::new(),
                 config: HashMap::new(),
                 credential_expires_at_ms: HashMap::new(),
+                profile_workspace: "default".to_string(),
             },
         )
         .await
@@ -5137,6 +5180,7 @@ mod tests {
                 credentials: HashMap::new(),
                 config: HashMap::new(),
                 credential_expires_at_ms: HashMap::new(),
+                profile_workspace: "default".to_string(),
             },
         )
         .await
@@ -5159,6 +5203,7 @@ mod tests {
                 credentials: HashMap::new(),
                 config: HashMap::new(),
                 credential_expires_at_ms: HashMap::new(),
+                profile_workspace: "default".to_string(),
             },
         )
         .await
@@ -5189,6 +5234,7 @@ mod tests {
                 credentials: HashMap::new(),
                 config: HashMap::new(),
                 credential_expires_at_ms: HashMap::new(),
+                profile_workspace: "default".to_string(),
             },
         )
         .await
@@ -5221,6 +5267,7 @@ mod tests {
                 credentials: HashMap::new(),
                 config: HashMap::new(),
                 credential_expires_at_ms: HashMap::new(),
+                profile_workspace: "default".to_string(),
             },
         )
         .await
@@ -5272,6 +5319,7 @@ mod tests {
                 credentials: std::iter::once(("SECONDARY".to_string(), String::new())).collect(),
                 config: std::iter::once(("region".to_string(), String::new())).collect(),
                 credential_expires_at_ms: HashMap::new(),
+                profile_workspace: "default".to_string(),
             },
         )
         .await
@@ -5327,6 +5375,7 @@ mod tests {
                 credentials: HashMap::new(),
                 config: HashMap::new(),
                 credential_expires_at_ms: HashMap::new(),
+                profile_workspace: "default".to_string(),
             },
         )
         .await
@@ -5360,6 +5409,7 @@ mod tests {
                 credentials: HashMap::new(),
                 config: HashMap::new(),
                 credential_expires_at_ms: HashMap::new(),
+                profile_workspace: "default".to_string(),
             },
         )
         .await
@@ -5395,6 +5445,7 @@ mod tests {
                 credentials: std::iter::once((oversized_key, "value".to_string())).collect(),
                 config: HashMap::new(),
                 credential_expires_at_ms: HashMap::new(),
+                profile_workspace: "default".to_string(),
             },
         )
         .await
@@ -5424,6 +5475,7 @@ mod tests {
             credentials: std::iter::once(("API_TOKEN".to_string(), "old".to_string())).collect(),
             config: HashMap::new(),
             credential_expires_at_ms: HashMap::new(),
+            profile_workspace: "default".to_string(),
         };
         store.put_message(&legacy).await.unwrap();
 
@@ -5444,6 +5496,7 @@ mod tests {
                     .collect(),
                 config: HashMap::new(),
                 credential_expires_at_ms: HashMap::new(),
+                profile_workspace: "default".to_string(),
             },
         )
         .await
@@ -5486,6 +5539,7 @@ mod tests {
             ))
             .collect(),
             credential_expires_at_ms: HashMap::new(),
+            profile_workspace: "default".to_string(),
         };
         create_provider_record(&store, "default", provider)
             .await
@@ -5546,6 +5600,7 @@ mod tests {
             ]
             .into_iter()
             .collect(),
+            profile_workspace: "default".to_string(),
         };
         create_provider_record(&store, "default", provider)
             .await
@@ -5595,6 +5650,7 @@ mod tests {
             .collect(),
             config: HashMap::new(),
             credential_expires_at_ms: HashMap::new(),
+            profile_workspace: "default".to_string(),
         };
         create_provider_record(&store, "default", provider)
             .await
@@ -5632,6 +5688,7 @@ mod tests {
                 .collect(),
                 config: HashMap::new(),
                 credential_expires_at_ms: HashMap::new(),
+                profile_workspace: "default".to_string(),
             },
         )
         .await
@@ -5653,6 +5710,7 @@ mod tests {
                     .collect(),
                 config: HashMap::new(),
                 credential_expires_at_ms: HashMap::new(),
+                profile_workspace: "default".to_string(),
             },
         )
         .await
@@ -5689,6 +5747,7 @@ mod tests {
                     .collect(),
                 config: HashMap::new(),
                 credential_expires_at_ms: HashMap::new(),
+                profile_workspace: "default".to_string(),
             },
         )
         .await
@@ -5713,6 +5772,7 @@ mod tests {
                 .collect(),
                 config: HashMap::new(),
                 credential_expires_at_ms: HashMap::new(),
+                profile_workspace: "default".to_string(),
             },
         )
         .await
@@ -5762,6 +5822,7 @@ mod tests {
                 .into_iter()
                 .collect(),
                 credential_expires_at_ms: HashMap::new(),
+                profile_workspace: "default".to_string(),
             },
         )
         .await
@@ -5837,6 +5898,7 @@ mod tests {
                 .collect(),
                 config: HashMap::new(),
                 credential_expires_at_ms: HashMap::new(),
+                profile_workspace: "default".to_string(),
             },
         )
         .await
@@ -5877,6 +5939,7 @@ mod tests {
                 .collect(),
                 config: HashMap::new(),
                 credential_expires_at_ms: HashMap::new(),
+                profile_workspace: "default".to_string(),
             },
         )
         .await
@@ -5938,6 +6001,7 @@ mod tests {
                 .into_iter()
                 .collect(),
                 credential_expires_at_ms: HashMap::new(),
+                profile_workspace: "default".to_string(),
             },
         )
         .await
@@ -5975,6 +6039,7 @@ mod tests {
                     .collect(),
                 config: HashMap::new(),
                 credential_expires_at_ms: HashMap::new(),
+                profile_workspace: "default".to_string(),
             },
         )
         .await
@@ -6018,6 +6083,7 @@ mod tests {
                 .collect(),
                 config: HashMap::new(),
                 credential_expires_at_ms: HashMap::new(),
+                profile_workspace: "default".to_string(),
             },
         )
         .await
@@ -6042,6 +6108,7 @@ mod tests {
                 .collect(),
                 config: HashMap::new(),
                 credential_expires_at_ms: HashMap::new(),
+                profile_workspace: "default".to_string(),
             },
         )
         .await
@@ -6083,6 +6150,7 @@ mod tests {
                 .collect(),
                 config: HashMap::new(),
                 credential_expires_at_ms: HashMap::new(),
+                profile_workspace: "default".to_string(),
             },
         )
         .await
@@ -6119,6 +6187,7 @@ mod tests {
                 .collect(),
                 config: HashMap::new(),
                 credential_expires_at_ms: HashMap::new(),
+                profile_workspace: "default".to_string(),
             },
         )
         .await
@@ -6222,6 +6291,7 @@ mod tests {
             credentials: HashMap::new(),
             config: HashMap::new(),
             credential_expires_at_ms: HashMap::new(),
+            profile_workspace: "default".to_string(),
         };
 
         // Attempt to update with an oversized credential key (exceeds MAX_MAP_KEY_LEN)
@@ -6582,6 +6652,7 @@ mod tests {
             credentials: HashMap::new(),
             config,
             credential_expires_at_ms: HashMap::new(),
+            profile_workspace: "default".to_string(),
         }
     }
 
@@ -6685,6 +6756,7 @@ mod tests {
             credentials: HashMap::new(),
             config: HashMap::from([("project_id".to_string(), "should-be-ignored".to_string())]),
             credential_expires_at_ms: HashMap::new(),
+            profile_workspace: "default".to_string(),
         };
         let mut env = HashMap::new();
         openshell_providers::ProviderRegistry::new().inject_env(&provider, &mut env);
@@ -6721,6 +6793,7 @@ mod tests {
             credentials: HashMap::from([("TOKEN".to_string(), "secret".to_string())]),
             config: HashMap::new(),
             credential_expires_at_ms: HashMap::new(),
+            profile_workspace: String::new(),
         };
 
         let created_default = handle_create_provider(
@@ -6926,5 +6999,209 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(err.code(), Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn create_provider_rejects_cross_workspace_profile_workspace() {
+        let store = test_store().await;
+        let provider = Provider {
+            metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
+                id: String::new(),
+                name: "cross-ws".to_string(),
+                created_at_ms: 0,
+                labels: HashMap::new(),
+                resource_version: 0,
+                workspace: "default".to_string(),
+            }),
+            r#type: "claude".to_string(),
+            credentials: [("ANTHROPIC_API_KEY".to_string(), "sk-123".to_string())]
+                .into_iter()
+                .collect(),
+            config: HashMap::new(),
+            credential_expires_at_ms: HashMap::new(),
+            profile_workspace: "other-workspace".to_string(),
+        };
+        let err = create_provider_record(&store, "default", provider)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), Code::InvalidArgument);
+        assert!(err.message().contains("profile_workspace"));
+    }
+
+    #[tokio::test]
+    async fn create_provider_accepts_global_profile_workspace() {
+        let store = test_store().await;
+        let provider = Provider {
+            metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
+                id: String::new(),
+                name: "global-profile".to_string(),
+                created_at_ms: 0,
+                labels: HashMap::new(),
+                resource_version: 0,
+                workspace: "default".to_string(),
+            }),
+            r#type: "claude".to_string(),
+            credentials: [("ANTHROPIC_API_KEY".to_string(), "sk-123".to_string())]
+                .into_iter()
+                .collect(),
+            config: HashMap::new(),
+            credential_expires_at_ms: HashMap::new(),
+            profile_workspace: String::new(),
+        };
+        let created = create_provider_record(&store, "default", provider)
+            .await
+            .unwrap();
+        assert!(created.profile_workspace.is_empty());
+    }
+
+    #[tokio::test]
+    async fn create_provider_accepts_same_workspace_profile_workspace() {
+        let store = test_store().await;
+        let provider = Provider {
+            metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
+                id: String::new(),
+                name: "same-ws-profile".to_string(),
+                created_at_ms: 0,
+                labels: HashMap::new(),
+                resource_version: 0,
+                workspace: "default".to_string(),
+            }),
+            r#type: "claude".to_string(),
+            credentials: [("ANTHROPIC_API_KEY".to_string(), "sk-123".to_string())]
+                .into_iter()
+                .collect(),
+            config: HashMap::new(),
+            credential_expires_at_ms: HashMap::new(),
+            profile_workspace: "default".to_string(),
+        };
+        let created = create_provider_record(&store, "default", provider)
+            .await
+            .unwrap();
+        assert_eq!(created.profile_workspace, "default");
+    }
+
+    #[tokio::test]
+    async fn update_provider_rejects_profile_workspace_change() {
+        let store = test_store().await;
+        let provider = Provider {
+            metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
+                id: String::new(),
+                name: "immutable-pw".to_string(),
+                created_at_ms: 0,
+                labels: HashMap::new(),
+                resource_version: 0,
+                workspace: "default".to_string(),
+            }),
+            r#type: "claude".to_string(),
+            credentials: [("ANTHROPIC_API_KEY".to_string(), "sk-123".to_string())]
+                .into_iter()
+                .collect(),
+            config: HashMap::new(),
+            credential_expires_at_ms: HashMap::new(),
+            profile_workspace: "default".to_string(),
+        };
+        create_provider_record(&store, "default", provider)
+            .await
+            .unwrap();
+
+        let update = Provider {
+            metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
+                id: String::new(),
+                name: "immutable-pw".to_string(),
+                created_at_ms: 0,
+                labels: HashMap::new(),
+                resource_version: 0,
+                workspace: "default".to_string(),
+            }),
+            r#type: String::new(),
+            credentials: HashMap::new(),
+            config: HashMap::new(),
+            credential_expires_at_ms: HashMap::new(),
+            profile_workspace: "other".to_string(),
+        };
+        let err = update_provider_record(&store, "default", update)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), Code::InvalidArgument);
+        assert!(err.message().contains("profile_workspace"));
+    }
+
+    #[tokio::test]
+    async fn provider_with_global_profile_resolves_platform_scoped_profile() {
+        use crate::persistence::{ObjectName, WriteCondition};
+        use prost::Message;
+
+        let store = test_store().await;
+
+        let stored = stored_provider_profile_for_workspace(custom_profile("global-custom"), "");
+        store
+            .put_if(
+                StoredProviderProfile::object_type(),
+                stored.object_id(),
+                stored.object_name(),
+                "",
+                &stored.encode_to_vec(),
+                None,
+                WriteCondition::MustCreate,
+            )
+            .await
+            .unwrap();
+
+        let profile = get_provider_type_profile(&store, "", "global-custom")
+            .await
+            .unwrap();
+        assert!(profile.is_some(), "global profile should be found at workspace ''");
+
+        let miss = get_provider_type_profile(&store, "default", "global-custom")
+            .await
+            .unwrap();
+        assert!(miss.is_none(), "global profile should NOT be found at workspace 'default'");
+    }
+
+    #[tokio::test]
+    async fn provider_with_workspace_profile_resolves_workspace_scoped_profile() {
+        let state = test_server_state().await;
+
+        handle_import_provider_profiles(
+            &state,
+            Request::new(ImportProviderProfilesRequest {
+                profiles: vec![ProviderProfileImportItem {
+                    profile: Some(custom_profile("ws-custom")),
+                    source: "ws-custom.yaml".to_string(),
+                }],
+                workspace: "default".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        create_provider_record(
+            state.store.as_ref(),
+            "default",
+            Provider {
+                metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
+                    id: String::new(),
+                    name: "uses-ws".to_string(),
+                    created_at_ms: 0,
+                    labels: HashMap::new(),
+                    resource_version: 0,
+                    workspace: "default".to_string(),
+                }),
+                r#type: "ws-custom".to_string(),
+                credentials: [("TOKEN".to_string(), "val".to_string())]
+                    .into_iter()
+                    .collect(),
+                config: HashMap::new(),
+                credential_expires_at_ms: HashMap::new(),
+                profile_workspace: "default".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let profile = get_provider_type_profile(state.store.as_ref(), "default", "ws-custom")
+            .await
+            .unwrap();
+        assert!(profile.is_some());
     }
 }

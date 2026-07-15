@@ -57,4 +57,8 @@ message Provider {
   // Expiration timestamps for credential values, keyed by credential/env var
   // name. A zero or missing value means the credential does not expire.
   map<string, int64> credential_expires_at_ms = 5;
+  // Workspace where this provider's type profile is stored.
+  // Empty string = platform/global scope. Must be empty or match
+  // metadata.workspace; cross-workspace references are rejected.
+  string profile_workspace = 6;
 }

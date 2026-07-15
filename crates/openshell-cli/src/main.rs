@@ -810,6 +810,11 @@ enum ProviderCommands {
         /// Provider config key/value pair.
         #[arg(long = "config", value_name = "KEY=VALUE")]
         config: Vec<String>,
+
+        /// Use a platform-scoped (global) provider profile instead of
+        /// a workspace-scoped one.
+        #[arg(long)]
+        global_profile: bool,
     },
 
     /// Manage provider credential refresh.
@@ -3269,7 +3274,9 @@ async fn main() -> Result<()> {
                     from_gcloud_adc,
                     runtime_credentials,
                     config,
+                    global_profile,
                 } => {
+                    let profile_ws = if global_profile { "" } else { &cli.workspace };
                     run::provider_create_with_options(
                         endpoint,
                         &name,
@@ -3280,6 +3287,7 @@ async fn main() -> Result<()> {
                         runtime_credentials,
                         &config,
                         &cli.workspace,
+                        profile_ws,
                         &tls,
                     )
                     .await?;

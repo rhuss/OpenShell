@@ -548,8 +548,12 @@ async fn build_credential_set_for_sandbox_with_catalog(
             };
             profile.clone()
         } else {
-            let Some(profile) =
-                super::provider::get_provider_type_profile(store, workspace, provider_type).await?
+            let Some(profile) = super::provider::get_provider_type_profile(
+                store,
+                &provider.profile_workspace,
+                provider_type,
+            )
+            .await?
             else {
                 warn!(
                     provider_name = %name,
@@ -1410,8 +1414,13 @@ pub(super) async fn compute_provider_env_revision_with_catalog(
                     Status::internal(format!("decode provider '{provider_name}' failed: {e}"))
                 })?;
                 hasher.update(provider.r#type.as_bytes());
-                hash_provider_profile_revision(store, workspace, &provider.r#type, &mut hasher)
-                    .await?;
+                hash_provider_profile_revision(
+                    store,
+                    &provider.profile_workspace,
+                    &provider.r#type,
+                    &mut hasher,
+                )
+                .await?;
 
                 let mut credential_keys: Vec<_> = provider.credentials.keys().collect();
                 credential_keys.sort();
@@ -1439,7 +1448,7 @@ pub(super) async fn compute_provider_env_revision_with_catalog(
 
 async fn hash_provider_profile_revision(
     store: &Store,
-    workspace: &str,
+    profile_workspace: &str,
     provider_type: &str,
     hasher: &mut Sha256,
 ) -> Result<(), Status> {
@@ -1453,7 +1462,7 @@ async fn hash_provider_profile_revision(
     match store
         .get_by_name(
             openshell_core::proto::StoredProviderProfile::object_type(),
-            workspace,
+            profile_workspace,
             provider_type,
         )
         .await
@@ -1512,8 +1521,12 @@ async fn profile_provider_policy_layers_with_catalog(
             };
             profile.clone()
         } else {
-            let Some(profile) =
-                super::provider::get_provider_type_profile(store, workspace, provider_type).await?
+            let Some(profile) = super::provider::get_provider_type_profile(
+                store,
+                &provider.profile_workspace,
+                provider_type,
+            )
+            .await?
             else {
                 warn!(
                     provider_name = %name,
@@ -4760,6 +4773,7 @@ mod tests {
                 .collect(),
             config: HashMap::new(),
             credential_expires_at_ms: HashMap::new(),
+            profile_workspace: "default".to_string(),
         }
     }
 

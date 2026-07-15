@@ -626,6 +626,7 @@ impl OpenShell for TestOpenShell {
                 existing.credential_expires_at_ms,
                 provider.credential_expires_at_ms,
             ),
+            profile_workspace: existing.profile_workspace,
         };
         let updated_name = updated.object_name().to_string();
         providers.insert(updated_name, updated.clone());
@@ -1516,6 +1517,7 @@ async fn provider_create_allows_empty_credentials_for_gateway_refresh_profiles()
         true,
         &[],
         "default",
+        "default",
         &ts.tls,
     )
     .await
@@ -2055,6 +2057,7 @@ async fn provider_update_from_existing_uses_profile_discovery_when_v2_enabled() 
             credentials: HashMap::new(),
             config: HashMap::new(),
             credential_expires_at_ms: HashMap::new(),
+            profile_workspace: "default".to_string(),
         },
     );
     let _env = EnvVarGuard::set(&[("CUSTOM_UPDATE_DISCOVERY_API_KEY", "updated-profile-secret")]);
