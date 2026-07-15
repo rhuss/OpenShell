@@ -7270,4 +7270,104 @@ mod tests {
             .unwrap();
         assert!(profile.is_some());
     }
+
+    #[tokio::test]
+    async fn import_provider_profile_platform_and_workspace_scopes_are_isolated() {
+        let state = test_server_state().await;
+
+        let import = |id: &str, workspace: &str| {
+            let state = state.clone();
+            let id = id.to_string();
+            let workspace = workspace.to_string();
+            async move {
+                handle_import_provider_profiles(
+                    &state,
+                    Request::new(ImportProviderProfilesRequest {
+                        profiles: vec![ProviderProfileImportItem {
+                            profile: Some(custom_profile(&id)),
+                            source: format!("{id}.yaml"),
+                        }],
+                        workspace,
+                    }),
+                )
+                .await
+                .unwrap()
+                .into_inner()
+            }
+        };
+
+        let resp = import("e2e-platform", "").await;
+        assert!(resp.imported);
+
+        let resp = import("e2e-workspace", "default").await;
+        assert!(resp.imported);
+
+        let list = |workspace: &str| {
+            let state = state.clone();
+            let workspace = workspace.to_string();
+            async move {
+                handle_list_provider_profiles(
+                    &state,
+                    Request::new(ListProviderProfilesRequest {
+                        limit: 200,
+                        offset: 0,
+                        workspace,
+                    }),
+                )
+                .await
+                .unwrap()
+                .into_inner()
+            }
+        };
+
+        let platform_profiles = list("").await;
+        assert!(
+            platform_profiles
+                .profiles
+                .iter()
+                .any(|p| p.id == "e2e-platform"),
+            "platform-scoped profile should appear in platform list"
+        );
+        assert!(
+            !platform_profiles
+                .profiles
+                .iter()
+                .any(|p| p.id == "e2e-workspace"),
+            "workspace-scoped profile should NOT appear in platform list"
+        );
+
+        let workspace_profiles = list("default").await;
+        assert!(
+            workspace_profiles
+                .profiles
+                .iter()
+                .any(|p| p.id == "e2e-workspace"),
+            "workspace-scoped profile should appear in workspace list"
+        );
+        assert!(
+            !workspace_profiles
+                .profiles
+                .iter()
+                .any(|p| p.id == "e2e-platform"),
+            "platform-scoped profile should NOT appear in workspace list"
+        );
+
+        let delete = |id: &str, workspace: &str| {
+            let state = state.clone();
+            let id = id.to_string();
+            let workspace = workspace.to_string();
+            async move {
+                handle_delete_provider_profile(
+                    &state,
+                    Request::new(DeleteProviderProfileRequest { id, workspace }),
+                )
+                .await
+                .unwrap()
+                .into_inner()
+            }
+        };
+
+        assert!(delete("e2e-platform", "").await.deleted);
+        assert!(delete("e2e-workspace", "default").await.deleted);
+    }
 }
