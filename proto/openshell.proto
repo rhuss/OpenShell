@@ -986,9 +986,8 @@ message ListProvidersResponse {
 message ListProviderProfilesRequest {
   uint32 limit = 1;
   uint32 offset = 2;
-  // Workspace scope for two-tier profile resolution. When set, returns merged
-  // view: workspace-scoped + platform-scoped + built-in. When empty, returns
-  // platform-scoped + built-in only.
+  // Workspace scope. When set, returns workspace-scoped + built-in profiles.
+  // When empty, returns platform-scoped + built-in only.
   string workspace = 3;
 }
 
@@ -1273,8 +1272,8 @@ message UpdateProviderProfilesResponse {
 // Lint provider profiles request.
 message LintProviderProfilesRequest {
   repeated ProviderProfileImportItem profiles = 1;
-  // Workspace scope. Included for API consistency but ignored by the server
-  // (lint is stateless validation).
+  // Workspace scope. Used to check for conflicts against existing profiles
+  // in the target workspace.
   string workspace = 2;
 }
 

@@ -36,14 +36,10 @@ fn is_selinux_enabled() -> bool {
     false
 }
 
-/// Label key for the sandbox ID.
-pub const LABEL_SANDBOX_ID: &str = "openshell.sandbox-id";
-/// Label key for the sandbox name.
-pub const LABEL_SANDBOX_NAME: &str = "openshell.sandbox-name";
-/// Label key for the sandbox namespace.
-pub const LABEL_SANDBOX_NAMESPACE: &str = "openshell.sandbox-namespace";
-/// Label key for the sandbox workspace.
-pub const LABEL_SANDBOX_WORKSPACE: &str = "openshell.sandbox-workspace";
+pub use openshell_core::driver_utils::{
+    LABEL_SANDBOX_ID, LABEL_SANDBOX_NAME, LABEL_SANDBOX_NAMESPACE, LABEL_SANDBOX_WORKSPACE,
+};
+
 /// Label applied to all managed containers.
 pub const LABEL_MANAGED: &str = "openshell.managed";
 /// Label filter string for list/event queries.
@@ -1690,13 +1686,13 @@ mod tests {
         let mut sandbox = test_sandbox("real-id", "real-name");
         sandbox.namespace = "real-namespace".to_string();
         let mut label_overrides = std::collections::HashMap::new();
-        label_overrides.insert("openshell.sandbox-id".to_string(), "spoofed-id".to_string());
+        label_overrides.insert("openshell.ai/sandbox-id".to_string(), "spoofed-id".to_string());
         label_overrides.insert(
-            "openshell.sandbox-name".to_string(),
+            "openshell.ai/sandbox-name".to_string(),
             "spoofed-name".to_string(),
         );
         label_overrides.insert(
-            "openshell.sandbox-namespace".to_string(),
+            "openshell.ai/sandbox-namespace".to_string(),
             "spoofed-namespace".to_string(),
         );
         sandbox.spec = Some(DriverSandboxSpec {
@@ -1714,20 +1710,20 @@ mod tests {
             .as_object()
             .expect("labels should be an object");
         assert_eq!(
-            labels.get("openshell.sandbox-id").and_then(|v| v.as_str()),
+            labels.get("openshell.ai/sandbox-id").and_then(|v| v.as_str()),
             Some("real-id"),
             "openshell.sandbox-id must not be overridden by template labels"
         );
         assert_eq!(
             labels
-                .get("openshell.sandbox-name")
+                .get("openshell.ai/sandbox-name")
                 .and_then(|v| v.as_str()),
             Some("real-name"),
             "openshell.sandbox-name must not be overridden by template labels"
         );
         assert_eq!(
             labels
-                .get("openshell.sandbox-namespace")
+                .get("openshell.ai/sandbox-namespace")
                 .and_then(|v| v.as_str()),
             Some("real-namespace"),
             "openshell.sandbox-namespace must not be overridden by template labels"

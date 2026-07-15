@@ -1175,11 +1175,7 @@ impl ComputeRuntime {
             if supervisor_promoted {
                 ensure_supervisor_ready_status(&mut status, &sandbox_name);
             }
-            let workspace = if incoming.workspace.is_empty() {
-                "default".to_string()
-            } else {
-                incoming.workspace.clone()
-            };
+            let workspace = incoming.workspace.clone();
             let mut sandbox = Sandbox {
                 metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
                     id: incoming.id.clone(),
@@ -3740,7 +3736,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn apply_sandbox_update_defaults_workspace_when_empty() {
+    async fn apply_sandbox_update_preserves_workspace() {
         let runtime = test_runtime(Arc::new(TestDriver::default())).await;
         runtime
             .apply_sandbox_update(DriverSandbox {
@@ -3752,7 +3748,7 @@ mod tests {
                     "DependenciesNotReady",
                     "Provisioning",
                 ))),
-                workspace: String::new(),
+                workspace: "alpha".to_string(),
             })
             .await
             .unwrap();
@@ -3763,6 +3759,6 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(stored.object_workspace(), "default");
+        assert_eq!(stored.object_workspace(), "alpha");
     }
 }

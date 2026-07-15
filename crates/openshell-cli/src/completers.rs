@@ -39,7 +39,8 @@ pub fn complete_sandbox_names(_prefix: &OsStr) -> Vec<CompletionCandidate> {
                 limit: 200,
                 offset: 0,
                 label_selector: String::new(),
-                workspace: String::new(),
+                workspace: std::env::var("OPENSHELL_WORKSPACE")
+                    .unwrap_or_else(|_| "default".to_string()),
                 all_workspaces: false,
             })
             .await
@@ -64,7 +65,8 @@ pub fn complete_provider_names(_prefix: &OsStr) -> Vec<CompletionCandidate> {
             .list_providers(ListProvidersRequest {
                 limit: 200,
                 offset: 0,
-                workspace: String::new(),
+                workspace: std::env::var("OPENSHELL_WORKSPACE")
+                    .unwrap_or_else(|_| "default".to_string()),
                 all_workspaces: false,
             })
             .await

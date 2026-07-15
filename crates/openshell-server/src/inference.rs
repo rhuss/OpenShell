@@ -81,11 +81,6 @@ impl Inference for InferenceService {
             .map_err(|e| Status::internal(format!("fetch sandbox failed: {e}")))?
             .ok_or_else(|| Status::not_found(format!("sandbox '{sandbox_id}' not found")))?;
         let workspace = sandbox.object_workspace();
-        let workspace = if workspace.is_empty() {
-            "default"
-        } else {
-            workspace
-        };
         resolve_inference_bundle(self.state.store.as_ref(), workspace)
             .await
             .map(Response::new)

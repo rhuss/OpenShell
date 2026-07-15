@@ -996,7 +996,7 @@ async fn validate_provider_environment_keys_unique_at(
             }
         }
         dynamic_bindings
-            .extend(dynamic_token_grant_bindings_for_provider(store, workspace, &provider).await?);
+            .extend(dynamic_token_grant_bindings_for_provider(store, &provider).await?);
     }
     validate_dynamic_token_grant_bindings_unambiguous(&dynamic_bindings)?;
     Ok(())
@@ -1014,7 +1014,6 @@ struct DynamicTokenGrantBinding {
 
 async fn dynamic_token_grant_bindings_for_provider(
     store: &Store,
-    _workspace: &str,
     provider: &Provider,
 ) -> Vec<DynamicTokenGrantBinding> {
     let provider_name = provider.object_name().to_string();
@@ -1643,7 +1642,6 @@ pub(super) async fn get_provider_type_profile(
 
 async fn provider_refresh_defaults(
     store: &Store,
-    _workspace: &str,
     provider: &Provider,
     credential_key: &str,
 ) -> Result<Option<CredentialRefreshProfile>, Status> {
@@ -1945,7 +1943,7 @@ async fn profile_attached_sandbox_diagnostics(
                 }
             } else {
                 bindings.extend(
-                    dynamic_token_grant_bindings_for_provider(store, workspace, &provider).await?,
+                    dynamic_token_grant_bindings_for_provider(store, &provider).await?,
                 );
             }
         }
@@ -2261,7 +2259,7 @@ pub(super) async fn handle_configure_provider_refresh(
     )
     .await?;
     let refresh_defaults =
-        provider_refresh_defaults(state.store.as_ref(), &workspace, &provider, credential_key)
+        provider_refresh_defaults(state.store.as_ref(), &provider, credential_key)
             .await?;
     validate_refresh_material(&request.material, refresh_defaults.as_ref())?;
     let material_scopes = crate::provider_refresh::material_scopes(&request.material);

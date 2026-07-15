@@ -377,11 +377,12 @@ impl Store {
         message: &T,
         scope: &str,
     ) -> PersistenceResult<()> {
-        debug_assert!(
-            !T::requires_workspace() || !message.object_workspace().is_empty(),
-            "{} requires a non-empty workspace",
-            T::object_type(),
-        );
+        if T::requires_workspace() && message.object_workspace().is_empty() {
+            return Err(PersistenceError::Encode(format!(
+                "{} requires a non-empty workspace",
+                T::object_type(),
+            )));
+        }
         let labels_map = message.object_labels();
         let labels_json = if labels_map.as_ref().is_none_or(HashMap::is_empty) {
             None
@@ -545,11 +546,12 @@ impl Store {
             })?)
         };
 
-        debug_assert!(
-            !T::requires_workspace() || !updated.object_workspace().is_empty(),
-            "{} requires a non-empty workspace",
-            T::object_type(),
-        );
+        if T::requires_workspace() && updated.object_workspace().is_empty() {
+            return Err(PersistenceError::Encode(format!(
+                "{} requires a non-empty workspace",
+                T::object_type(),
+            )));
+        }
 
         // Single-attempt CAS write - fails with Conflict on version mismatch
         let result = self
@@ -670,11 +672,12 @@ impl Store {
         &self,
         message: &T,
     ) -> PersistenceResult<()> {
-        debug_assert!(
-            !T::requires_workspace() || !message.object_workspace().is_empty(),
-            "{} requires a non-empty workspace",
-            T::object_type(),
-        );
+        if T::requires_workspace() && message.object_workspace().is_empty() {
+            return Err(PersistenceError::Encode(format!(
+                "{} requires a non-empty workspace",
+                T::object_type(),
+            )));
+        }
         let labels_map = message.object_labels();
         let labels_json = if labels_map.as_ref().is_none_or(HashMap::is_empty) {
             None

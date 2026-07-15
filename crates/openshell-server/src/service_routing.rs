@@ -81,18 +81,16 @@ fn endpoint_host(
     service: &str,
 ) -> Option<String> {
     let base_domain = config.base_domains.first()?;
-    let ws = if workspace.is_empty() {
-        "default"
-    } else {
-        workspace
-    };
     Some(if service.is_empty() {
-        format!("{ws}--{sandbox}.{base_domain}")
+        format!("{workspace}--{sandbox}.{base_domain}")
     } else {
-        format!("{ws}--{sandbox}--{service}.{base_domain}")
+        format!("{workspace}--{sandbox}--{service}.{base_domain}")
     })
 }
 
+// The `--` delimiter is unambiguous because both workspace and sandbox name
+// validation reject consecutive hyphens (see `validate_workspace_name` and
+// `validate_sandbox_spec`).
 pub fn parse_host(host: &str, config: &ServiceRoutingConfig) -> Option<(String, String, String)> {
     let host = host.split_once(':').map_or(host, |(name, _)| name);
     for base_domain in &config.base_domains {
