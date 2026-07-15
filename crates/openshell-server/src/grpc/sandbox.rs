@@ -1492,7 +1492,7 @@ pub(super) async fn handle_revoke_ssh_session(
             SshSession::object_type(),
             session.object_id(),
             session.object_name(),
-            "",
+            session.object_workspace(),
             &session.encode_to_vec(),
             None,
             WriteCondition::MatchResourceVersion(resource_version),
@@ -3748,5 +3748,43 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn revoke_ssh_session_preserves_workspace() {
+        let state = test_server_state().await;
+        state
+            .store
+            .put_message(&test_sandbox("ws-test", Vec::new()))
+            .await
+            .unwrap();
+
+        let response = handle_create_ssh_session(
+            &state,
+            Request::new(CreateSshSessionRequest {
+                sandbox_id: "sandbox-ws-test".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+        let token = response.into_inner().token;
+
+        handle_revoke_ssh_session(
+            &state,
+            Request::new(RevokeSshSessionRequest {
+                token: token.clone(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let session: SshSession = state
+            .store
+            .get_message::<SshSession>(&token)
+            .await
+            .unwrap()
+            .expect("session should still exist after revocation");
+        assert!(session.revoked);
+        assert_eq!(session.object_workspace(), "default");
     }
 }
