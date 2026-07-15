@@ -1397,11 +1397,12 @@ impl ComputeRuntime {
     }
 
     async fn cleanup_sandbox_owned_records(&self, sandbox: &Sandbox) {
-        self.cleanup_sandbox_ssh_sessions(sandbox.object_id()).await;
+        self.cleanup_sandbox_ssh_sessions(sandbox.object_id(), sandbox.object_workspace())
+            .await;
 
         if let Err(e) = self
             .store
-            .delete_by_name(SANDBOX_SETTINGS_OBJECT_TYPE, "", sandbox.object_name())
+            .delete_by_name(SANDBOX_SETTINGS_OBJECT_TYPE, sandbox.object_workspace(), sandbox.object_name())
             .await
         {
             warn!(
@@ -1413,10 +1414,10 @@ impl ComputeRuntime {
         }
     }
 
-    async fn cleanup_sandbox_ssh_sessions(&self, sandbox_id: &str) {
+    async fn cleanup_sandbox_ssh_sessions(&self, sandbox_id: &str, workspace: &str) {
         if let Ok(records) = self
             .store
-            .list_by_type(SshSession::object_type(), 1000, 0)
+            .list(SshSession::object_type(), workspace, 1000, 0)
             .await
         {
             for record in records {

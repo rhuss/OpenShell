@@ -668,6 +668,7 @@ impl KubernetesComputeDriver {
         let _ = self
             .validate_driver_config_for_sandbox(sandbox)
             .map_err(tonic::Status::invalid_argument)?;
+        validate_kube_resource_name_length(&sandbox.workspace, &sandbox.name)?;
         let gpu_requirements = sandbox
             .spec
             .as_ref()
@@ -1153,6 +1154,19 @@ fn validate_gpu_request(
 
 fn kube_resource_name(workspace: &str, name: &str) -> String {
     format!("{workspace}--{name}")
+}
+
+const MAX_KUBE_NAME_LEN: usize = 63;
+
+fn validate_kube_resource_name_length(workspace: &str, name: &str) -> Result<(), tonic::Status> {
+    let combined = workspace.len() + 2 + name.len(); // "--" separator
+    if combined > MAX_KUBE_NAME_LEN {
+        return Err(tonic::Status::invalid_argument(format!(
+            "combined Kubernetes resource name '{workspace}--{name}' is {combined} characters, \
+             exceeding the DNS-1123 limit of {MAX_KUBE_NAME_LEN}"
+        )));
+    }
+    Ok(())
 }
 
 fn sandbox_labels(sandbox: &Sandbox) -> BTreeMap<String, String> {
@@ -5719,6 +5733,20 @@ mod tests {
         let alpha = kube_resource_name("alpha", "work");
         let beta = kube_resource_name("beta", "work");
         assert_ne!(alpha, beta);
+    }
+
+    #[test]
+    fn kube_resource_name_length_validation_accepts_short_names() {
+        validate_kube_resource_name_length("default", "my-sandbox").unwrap();
+    }
+
+    #[test]
+    fn kube_resource_name_length_validation_rejects_oversized_names() {
+        let long_ws = "a".repeat(40);
+        let long_name = "b".repeat(25);
+        let err = validate_kube_resource_name_length(&long_ws, &long_name).unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert!(err.message().contains("67"));
     }
 
     #[test]

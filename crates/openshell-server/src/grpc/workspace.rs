@@ -198,6 +198,7 @@ pub(super) async fn handle_delete_workspace(
         (ServiceEndpoint::object_type(), "service"),
         (InferenceRoute::object_type(), "inference route"),
         (SshSession::object_type(), "ssh session"),
+        (super::policy::SANDBOX_SETTINGS_OBJECT_TYPE, "sandbox settings"),
     ] {
         let records = state
             .store

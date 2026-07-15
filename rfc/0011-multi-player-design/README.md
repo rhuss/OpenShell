@@ -907,6 +907,17 @@ openshell provider profile list --workspace team-ml
 openshell provider profile list --global
 ```
 
+### Python SDK Surface
+
+The Python SDK requires `workspace` as an explicit keyword-only argument on
+all workspace-scoped operations (`create()`, `get()`, `delete()`, `list()`,
+etc.). Unlike the CLI, the SDK does not default to `"default"` — programmatic
+callers must always specify the target workspace. This is a deliberate design
+choice: agents and automation scripts should be explicit about which workspace
+they operate on, and a silent default could mask workspace-routing bugs.
+Passing `workspace=None` to `list()` uses `all_workspaces=True` for
+cross-workspace queries.
+
 ## Implementation plan
 
 The implementation builds on the existing authentication, RBAC, and OCSF
@@ -925,7 +936,16 @@ foundations. The work can be phased to deliver value incrementally:
   and visible only within their workspace. Each scope is listed independently
   — `ListProviderProfiles` returns profiles from the requested scope plus
   built-ins, not a merged view across scopes. Built-in profiles are included
-  in both scopes for convenience. Implement workspace-scoped
+  in both scopes for convenience. Add `UpdateProviderProfiles` RPC for
+  in-place updates to existing custom profiles, with optimistic concurrency
+  control via a `resource_version` field on `ProviderProfile` — updates must
+  supply the current version to prevent stale overwrites.
+  The `Provider` datamodel message gains a
+  `profile_workspace` field that binds a provider to a specific workspace's
+  profile scope — when set, the provider resolves profiles from that workspace
+  rather than the platform scope, enabling workspace-scoped provider
+  configuration without duplicating the provider record itself.
+  Implement workspace-scoped
   storage and filtering in gRPC handlers. Add the membership store with `(workspace, principal_subject) →
   role` records and `AddWorkspaceMember`, `RemoveWorkspaceMember`,
   `ListWorkspaceMembers` RPCs. Create the `default` workspace on gateway
@@ -941,8 +961,10 @@ foundations. The work can be phased to deliver value incrementally:
   without knowing whether the default workspace was omitted. The consistent
   three-segment format makes parsing unambiguous: two segments is
   `{workspace}--{sandbox}`, three is `{workspace}--{sandbox}--{service}`.
+  This is a breaking change: existing two-segment hostnames
+  (`{sandbox}--{service}.{domain}`) will fail to parse after the upgrade.
   Backward compatibility is desirable but not a hard requirement
-  at this stage — existing users may need to recreate resources when upgrading.
+  at this stage — existing users must recreate service endpoints when upgrading.
   Add a cross-workspace `list_by_type(object_type, limit, offset)` store method
   for internal infrastructure operations (reconciler, resume, provider refresh)
   that need to query workspace-scoped resources across all workspaces. Thread
@@ -951,9 +973,13 @@ foundations. The work can be phased to deliver value incrementally:
   multiple workspaces, `provider_name` alone is insufficient because different
   workspaces can have same-named providers. Add `all_workspaces` field to
   workspace-scoped list RPCs for Platform Admin cross-workspace visibility.
-  Add `ObjectWorkspace::requires_workspace()` trait method and `debug_assert!`
-  validation in store write helpers to catch workspace-scoped resources
-  persisted with an empty workspace in debug builds.
+  Add `ObjectWorkspace::requires_workspace()` trait method and validation in
+  store write helpers (`put_message`, `put_scoped_message`) that returns an
+  error when a workspace-scoped resource is persisted with an empty workspace.
+  Rename inference RPCs from `SetClusterInference`/`GetClusterInference` to
+  `SetInferenceRoute`/`GetInferenceRoute` (and `ClusterInferenceConfig` to
+  `InferenceRouteConfig`) to reflect that inference routes are now
+  workspace-scoped rather than cluster-global.
 
 - **Phase 2: Expanded role model and authorization enforcement.** Extend the
   RBAC system from two-tier (admin/user) to three user roles (Platform Admin,
