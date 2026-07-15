@@ -956,6 +956,7 @@ fn resolve_file_download_target(
 /// Files are streamed as a tar archive to `ssh ... tar xf - -C <dest>` on
 /// the sandbox side.  When `dest` is `None`, files are uploaded to the
 /// sandbox user's home directory.
+#[allow(clippy::too_many_arguments)]
 pub async fn sandbox_sync_up_files(
     server: &str,
     name: &str,

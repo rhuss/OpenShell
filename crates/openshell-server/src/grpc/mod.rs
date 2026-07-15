@@ -249,6 +249,9 @@ impl OpenShell for OpenShellService {
 
     type WatchSandboxStream = ReceiverStream<Result<SandboxStreamEvent, Status>>;
 
+    // TODO(phase2): data-plane RPCs do not carry a workspace field. Add
+    // workspace verification to confirm the sandbox belongs to the caller's
+    // workspace before proxying.
     #[rpc_auth(auth = "bearer", scope = "sandbox:read", role = "user")]
     async fn watch_sandbox(
         &self,
@@ -265,6 +268,8 @@ impl OpenShell for OpenShellService {
         sandbox::handle_get_sandbox(&self.state, request).await
     }
 
+    // TODO(phase2): all_workspaces flag is currently accessible to any
+    // authenticated user. Restrict to Platform Admin role in Phase 2.
     #[rpc_auth(auth = "bearer", scope = "sandbox:read", role = "user")]
     async fn list_sandboxes(
         &self,
@@ -309,6 +314,7 @@ impl OpenShell for OpenShellService {
 
     type ExecSandboxStream = ReceiverStream<Result<ExecSandboxEvent, Status>>;
 
+    // TODO(phase2): no workspace field — see watch_sandbox comment.
     #[rpc_auth(auth = "bearer", scope = "sandbox:write", role = "user")]
     async fn exec_sandbox(
         &self,
@@ -320,6 +326,7 @@ impl OpenShell for OpenShellService {
     type ForwardTcpStream =
         Pin<Box<dyn tokio_stream::Stream<Item = Result<TcpForwardFrame, Status>> + Send + 'static>>;
 
+    // TODO(phase2): no workspace field — see watch_sandbox comment.
     #[rpc_auth(auth = "bearer", scope = "sandbox:write", role = "user")]
     async fn forward_tcp(
         &self,
@@ -340,6 +347,7 @@ impl OpenShell for OpenShellService {
 
     // --- SSH sessions ---
 
+    // TODO(phase2): no workspace field — see watch_sandbox comment.
     #[rpc_auth(auth = "bearer", scope = "sandbox:write", role = "user")]
     async fn create_ssh_session(
         &self,
@@ -364,6 +372,8 @@ impl OpenShell for OpenShellService {
         service::handle_get_service(&self.state, request).await
     }
 
+    // TODO(phase2): all_workspaces flag is currently accessible to any
+    // authenticated user. Restrict to Platform Admin role in Phase 2.
     #[rpc_auth(auth = "bearer", scope = "sandbox:read", role = "user")]
     async fn list_services(
         &self,
@@ -406,6 +416,8 @@ impl OpenShell for OpenShellService {
         provider::handle_get_provider(&self.state, request).await
     }
 
+    // TODO(phase2): all_workspaces flag is currently accessible to any
+    // authenticated user. Restrict to Platform Admin role in Phase 2.
     #[rpc_auth(auth = "bearer", scope = "provider:read", role = "user")]
     async fn list_providers(
         &self,

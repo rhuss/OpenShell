@@ -2423,6 +2423,8 @@ pub(super) async fn handle_get_sandbox_logs(
     request: Request<GetSandboxLogsRequest>,
 ) -> Result<Response<GetSandboxLogsResponse>, Status> {
     let req = request.into_inner();
+    // TODO(phase2): workspace is resolved but not used for authorization.
+    // Verify the sandbox belongs to this workspace before returning logs.
     let _workspace =
         super::workspace::resolve_workspace(state.store.as_ref(), &req.workspace).await?;
     if req.sandbox_id.is_empty() {

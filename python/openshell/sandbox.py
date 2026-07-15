@@ -479,6 +479,8 @@ class SandboxClient:
         offset: int = 0,
         label_selector: str | None = None,
     ) -> builtins.list[SandboxRef]:
+        # workspace=None lists across all workspaces (all_workspaces=True).
+        # Pass an explicit workspace string to scope to a single workspace.
         if workspace is not None:
             request = openshell_pb2.ListSandboxesRequest(
                 workspace=workspace,

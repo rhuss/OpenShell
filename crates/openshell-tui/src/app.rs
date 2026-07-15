@@ -1092,6 +1092,10 @@ impl App {
                 }
             }
         }
+        // Reset selection indices so the cursor doesn't point past the end
+        // of the new workspace's (potentially shorter) sandbox/provider lists.
+        self.sandbox_selected = 0;
+        self.provider_selected = 0;
         self.pending_workspace_refresh = true;
     }
 

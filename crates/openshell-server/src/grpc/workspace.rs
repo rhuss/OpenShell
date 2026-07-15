@@ -15,13 +15,16 @@ use openshell_core::proto::{
     GetWorkspaceResponse, InferenceRoute, ListWorkspaceMembersRequest,
     ListWorkspaceMembersResponse, ListWorkspacesRequest, ListWorkspacesResponse, Provider,
     RemoveWorkspaceMemberRequest, RemoveWorkspaceMemberResponse, Sandbox, ServiceEndpoint,
-    SshSession, StoredProviderProfile, Workspace, WorkspaceMember, WorkspaceRole,
+    SshSession, StoredProviderCredentialRefreshState, StoredProviderProfile, Workspace,
+    WorkspaceMember, WorkspaceRole,
 };
 use prost::Message;
 use tonic::{Request, Response, Status};
 
 use crate::ServerState;
-use crate::persistence::{ObjectType, WriteCondition, current_time_ms};
+use crate::persistence::{
+    DRAFT_CHUNK_OBJECT_TYPE, ObjectType, POLICY_OBJECT_TYPE, WriteCondition, current_time_ms,
+};
 
 use super::{MAX_PAGE_SIZE, clamp_limit};
 
@@ -48,10 +51,30 @@ fn validate_workspace_name(name: &str) -> Result<(), Status> {
     super::validation::validate_dns1123_label(name, "workspace name")
 }
 
+/// Resolve a workspace for provider profile operations.
+///
+/// Provider profiles support a platform scope where `""` is a distinct,
+/// meaningful value (not an alias for `"default"`). This function preserves
+/// `""` as-is for platform-scoped operations. Non-empty workspace values are
+/// validated for existence via [`resolve_workspace`].
+pub async fn resolve_profile_workspace(
+    store: &crate::persistence::Store,
+    workspace: &str,
+) -> Result<String, Status> {
+    if workspace.is_empty() {
+        return Ok(String::new());
+    }
+    resolve_workspace(store, workspace).await
+}
+
 /// Resolve and validate a workspace name from a request field.
 ///
 /// Empty strings are normalized to `"default"`. The workspace must exist in the
 /// store; returns `NOT_FOUND` if it doesn't.
+///
+/// TODO(phase2): this only validates existence. Workspace membership enforcement
+/// (checking the caller is a member of the resolved workspace) is deferred to
+/// Phase 2.
 pub async fn resolve_workspace(
     store: &crate::persistence::Store,
     workspace: &str,
@@ -190,7 +213,15 @@ pub(super) async fn handle_delete_workspace(
         ));
     }
 
+    // TOCTOU: the blocker scan and the subsequent delete are not transactional,
+    // so a resource could be created between the check and the delete. The
+    // persistence layer does not currently offer a transaction primitive that
+    // spans both reads and deletes. Acceptable for now — workspace deletion is
+    // an admin-only, low-frequency operation.
     let mut blocking = Vec::new();
+    // Policy revisions and draft chunks are normally deleted when their parent
+    // sandbox is removed, and refresh state is transient; these checks are a
+    // safety net against regressions.
     for (object_type, label) in [
         (Sandbox::object_type(), "sandbox"),
         (Provider::object_type(), "provider"),
@@ -199,6 +230,9 @@ pub(super) async fn handle_delete_workspace(
         (InferenceRoute::object_type(), "inference route"),
         (SshSession::object_type(), "ssh session"),
         (super::policy::SANDBOX_SETTINGS_OBJECT_TYPE, "sandbox settings"),
+        (POLICY_OBJECT_TYPE, "sandbox policy"),
+        (DRAFT_CHUNK_OBJECT_TYPE, "draft policy chunk"),
+        (StoredProviderCredentialRefreshState::object_type(), "credential refresh state"),
     ] {
         let records = state
             .store

@@ -1743,7 +1743,7 @@ fn spawn_update_provider(app: &App, tx: mpsc::UnboundedSender<Event>) {
     let ptype = form.provider_type.clone();
     let cred_key = form.credential_key.clone();
     let new_value = form.new_value.clone();
-    let workspace = app.current_workspace.clone();
+    let workspace = app.selected_provider_workspace();
 
     tokio::spawn(async move {
         let mut credentials = HashMap::new();

@@ -980,6 +980,12 @@ foundations. The work can be phased to deliver value incrementally:
   `SetInferenceRoute`/`GetInferenceRoute` (and `ClusterInferenceConfig` to
   `InferenceRouteConfig`) to reflect that inference routes are now
   workspace-scoped rather than cluster-global.
+  **Additional breaking changes:** The Docker/Podman container label key
+  changes from `openshell.sandbox_namespace` to `openshell.workspace` —
+  existing containers will not be discovered after the upgrade; delete all
+  sandboxes before upgrading. SSH config host aliases change from
+  `{sandbox}.openshell` to `{workspace}/{sandbox}.openshell` — existing
+  SSH configs must be regenerated after the upgrade.
 
 - **Phase 2: Expanded role model and authorization enforcement.** Extend the
   RBAC system from two-tier (admin/user) to three user roles (Platform Admin,

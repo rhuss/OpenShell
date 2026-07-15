@@ -140,6 +140,11 @@ pub fn generate_name() -> String {
 /// Decode a single [`ObjectRecord`] into a protobuf message, hydrating
 /// `resource_version` from the authoritative DB row.
 ///
+/// Only `resource_version` is hydrated here; `workspace` is NOT backfilled from
+/// the DB column because the workspace field is authoritative in the protobuf
+/// payload at creation time. This is a breaking upgrade — pre-workspace records
+/// will carry an empty workspace until they are re-created.
+///
 /// Extracted to avoid repeating the identical decode-and-hydrate block across
 /// `get_message`, `get_message_by_name`, `list_messages`, and
 /// `list_messages_with_selector`.

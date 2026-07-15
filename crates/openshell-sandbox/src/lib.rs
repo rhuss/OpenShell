@@ -2386,7 +2386,10 @@ async fn run_policy_poll_loop(ctx: PolicyPollLoopContext) -> Result<()> {
         } else {
             tokio::time::sleep(interval).await;
             match client.poll_settings(&ctx.sandbox_id).await {
-                Ok(result) => result,
+                Ok(result) => {
+                    let _ = ctx.workspace_tx.send(client.workspace());
+                    result
+                }
                 Err(e) => {
                     debug!(error = %e, "Settings poll: server unreachable, will retry");
                     continue;

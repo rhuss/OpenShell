@@ -74,6 +74,11 @@ fn endpoint_scheme(config: &openshell_core::Config) -> &'static str {
     }
 }
 
+// The DNS label before the base domain can exceed the 63-character limit
+// (RFC 1035) when workspace + sandbox + service names are long. This is a
+// pre-existing gap — sandbox names alone could already exceed the limit
+// before workspace scoping was added. A future validation pass should
+// enforce the combined label length at creation time.
 fn endpoint_host(
     config: &ServiceRoutingConfig,
     workspace: &str,

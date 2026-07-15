@@ -388,7 +388,7 @@ WHERE "object_type" = ?1 AND "workspace" = ?2
         .fetch_one(&self.pool)
         .await
         .map_err(|e| map_db_error(&e))?;
-        Ok(row.0 as u64)
+        Ok(u64::try_from(row.0).unwrap_or(0))
     }
 
     pub async fn delete_all_in_workspace(

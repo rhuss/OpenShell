@@ -1333,7 +1333,8 @@ pub(super) async fn handle_list_provider_profiles(
 ) -> Result<Response<ListProviderProfilesResponse>, Status> {
     let request = request.into_inner();
     let workspace =
-        super::workspace::resolve_workspace(state.store.as_ref(), &request.workspace).await?;
+        super::workspace::resolve_profile_workspace(state.store.as_ref(), &request.workspace)
+            .await?;
     let limit = clamp_limit(request.limit, 100, MAX_PAGE_SIZE) as usize;
     let offset = request.offset as usize;
     let mut profiles = merged_provider_profiles(state.store.as_ref(), &workspace).await?;
@@ -1353,7 +1354,7 @@ pub(super) async fn handle_get_provider_profile(
 ) -> Result<Response<ProviderProfileResponse>, Status> {
     let req = request.into_inner();
     let workspace =
-        super::workspace::resolve_workspace(state.store.as_ref(), &req.workspace).await?;
+        super::workspace::resolve_profile_workspace(state.store.as_ref(), &req.workspace).await?;
     let id = req.id;
     let id = normalize_profile_id_request(&id)?;
     let profile = get_provider_type_profile(state.store.as_ref(), &workspace, &id)
@@ -1372,7 +1373,8 @@ pub(super) async fn handle_import_provider_profiles(
 ) -> Result<Response<ImportProviderProfilesResponse>, Status> {
     let request = request.into_inner();
     let workspace =
-        super::workspace::resolve_workspace(state.store.as_ref(), &request.workspace).await?;
+        super::workspace::resolve_profile_workspace(state.store.as_ref(), &request.workspace)
+            .await?;
     let (profiles, mut diagnostics) = profiles_from_import_items(&request.profiles);
     add_empty_profile_set_diagnostic(&profiles, &mut diagnostics);
     let _sandbox_sync_guard = state.compute.sandbox_sync_guard().await;
@@ -1438,7 +1440,8 @@ pub(super) async fn handle_update_provider_profiles(
 ) -> Result<Response<UpdateProviderProfilesResponse>, Status> {
     let request = request.into_inner();
     let workspace =
-        super::workspace::resolve_workspace(state.store.as_ref(), &request.workspace).await?;
+        super::workspace::resolve_profile_workspace(state.store.as_ref(), &request.workspace)
+            .await?;
     let items = request.profile.into_iter().collect::<Vec<_>>();
     let (profiles, mut diagnostics) = profiles_from_import_items(&items);
     add_empty_profile_set_diagnostic(&profiles, &mut diagnostics);
@@ -1553,7 +1556,8 @@ pub(super) async fn handle_lint_provider_profiles(
 ) -> Result<Response<LintProviderProfilesResponse>, Status> {
     let request = request.into_inner();
     let workspace =
-        super::workspace::resolve_workspace(state.store.as_ref(), &request.workspace).await?;
+        super::workspace::resolve_profile_workspace(state.store.as_ref(), &request.workspace)
+            .await?;
     let (profiles, mut diagnostics) = profiles_from_import_items(&request.profiles);
     add_empty_profile_set_diagnostic(&profiles, &mut diagnostics);
     diagnostics
@@ -1573,7 +1577,7 @@ pub(super) async fn handle_delete_provider_profile(
 ) -> Result<Response<DeleteProviderProfileResponse>, Status> {
     let req = request.into_inner();
     let workspace =
-        super::workspace::resolve_workspace(state.store.as_ref(), &req.workspace).await?;
+        super::workspace::resolve_profile_workspace(state.store.as_ref(), &req.workspace).await?;
     let id = req.id;
     let id = normalize_profile_id_request(&id)?;
     let _sandbox_sync_guard = state.compute.sandbox_sync_guard().await;
@@ -7086,9 +7090,7 @@ mod tests {
                 workspace: "default".to_string(),
             }),
             r#type: "claude".to_string(),
-            credentials: [("ANTHROPIC_API_KEY".to_string(), "sk-123".to_string())]
-                .into_iter()
-                .collect(),
+            credentials: HashMap::from([("ANTHROPIC_API_KEY".to_string(), "sk-123".to_string())]),
             config: HashMap::new(),
             credential_expires_at_ms: HashMap::new(),
             profile_workspace: "other-workspace".to_string(),
@@ -7113,9 +7115,7 @@ mod tests {
                 workspace: "default".to_string(),
             }),
             r#type: "claude".to_string(),
-            credentials: [("ANTHROPIC_API_KEY".to_string(), "sk-123".to_string())]
-                .into_iter()
-                .collect(),
+            credentials: HashMap::from([("ANTHROPIC_API_KEY".to_string(), "sk-123".to_string())]),
             config: HashMap::new(),
             credential_expires_at_ms: HashMap::new(),
             profile_workspace: String::new(),
@@ -7139,9 +7139,7 @@ mod tests {
                 workspace: "default".to_string(),
             }),
             r#type: "claude".to_string(),
-            credentials: [("ANTHROPIC_API_KEY".to_string(), "sk-123".to_string())]
-                .into_iter()
-                .collect(),
+            credentials: HashMap::from([("ANTHROPIC_API_KEY".to_string(), "sk-123".to_string())]),
             config: HashMap::new(),
             credential_expires_at_ms: HashMap::new(),
             profile_workspace: "default".to_string(),
@@ -7165,9 +7163,7 @@ mod tests {
                 workspace: "default".to_string(),
             }),
             r#type: "claude".to_string(),
-            credentials: [("ANTHROPIC_API_KEY".to_string(), "sk-123".to_string())]
-                .into_iter()
-                .collect(),
+            credentials: HashMap::from([("ANTHROPIC_API_KEY".to_string(), "sk-123".to_string())]),
             config: HashMap::new(),
             credential_expires_at_ms: HashMap::new(),
             profile_workspace: "default".to_string(),
@@ -7260,9 +7256,7 @@ mod tests {
                     workspace: "default".to_string(),
                 }),
                 r#type: "ws-custom".to_string(),
-                credentials: [("TOKEN".to_string(), "val".to_string())]
-                    .into_iter()
-                    .collect(),
+                credentials: HashMap::from([("TOKEN".to_string(), "val".to_string())]),
                 config: HashMap::new(),
                 credential_expires_at_ms: HashMap::new(),
                 profile_workspace: "default".to_string(),
