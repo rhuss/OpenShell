@@ -414,8 +414,13 @@ pub async fn run_sandbox(
                     let sandbox_name = agg_name.clone();
                     let workspace = denial_workspace_rx.borrow().clone();
                     async move {
-                        if let Err(e) =
-                            flush_proposals_to_gateway(&endpoint, &sandbox_name, &workspace, summaries).await
+                        if let Err(e) = flush_proposals_to_gateway(
+                            &endpoint,
+                            &sandbox_name,
+                            &workspace,
+                            summaries,
+                        )
+                        .await
                         {
                             warn!(error = %e, "Failed to flush denial summaries to gateway");
                         }
@@ -451,7 +456,8 @@ pub async fn run_sandbox(
                     let workspace = activity_workspace_rx.borrow().clone();
                     async move {
                         if let Err(e) =
-                            flush_activity_to_gateway(&endpoint, &sandbox_name, &workspace, summary).await
+                            flush_activity_to_gateway(&endpoint, &sandbox_name, &workspace, summary)
+                                .await
                         {
                             warn!(error = %e, "Failed to flush activity summary to gateway");
                         }

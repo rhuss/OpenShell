@@ -1553,9 +1553,12 @@ pub(super) async fn handle_lint_provider_profiles(
     request: Request<LintProviderProfilesRequest>,
 ) -> Result<Response<LintProviderProfilesResponse>, Status> {
     let request = request.into_inner();
+    let workspace =
+        super::workspace::resolve_workspace(state.store.as_ref(), &request.workspace).await?;
     let (profiles, mut diagnostics) = profiles_from_import_items(&request.profiles);
     add_empty_profile_set_diagnostic(&profiles, &mut diagnostics);
-    diagnostics.extend(profile_conflict_diagnostics(state.store.as_ref(), "", &profiles).await?);
+    diagnostics
+        .extend(profile_conflict_diagnostics(state.store.as_ref(), &workspace, &profiles).await?);
     diagnostics.extend(validate_profile_set(&profiles));
     let valid = !has_errors(&diagnostics);
 
@@ -2558,13 +2561,13 @@ mod tests {
     use crate::grpc::{MAX_MAP_KEY_LEN, MAX_PROVIDER_TYPE_LEN};
     use crate::persistence::test_store;
     use openshell_core::proto::{
-        DeleteProviderProfileRequest, GetProviderProfileRequest, ImportProviderProfilesRequest,
-        L7Allow, L7Rule, LintProviderProfilesRequest, ListProviderProfilesRequest, NetworkBinary,
-        NetworkEndpoint, ProviderCredentialRefresh, ProviderCredentialRefreshMaterial,
-        ProviderCredentialTokenGrant, ProviderCredentialTokenGrantAudienceOverride,
-        ProviderProfile, ProviderProfileCategory, ProviderProfileCredential,
-        ProviderProfileImportItem, Sandbox, SandboxSpec, StoredProviderProfile,
-        UpdateProviderProfilesRequest,
+        CreateWorkspaceRequest, DeleteProviderProfileRequest, GetProviderProfileRequest,
+        ImportProviderProfilesRequest, L7Allow, L7Rule, LintProviderProfilesRequest,
+        ListProviderProfilesRequest, NetworkBinary, NetworkEndpoint, ProviderCredentialRefresh,
+        ProviderCredentialRefreshMaterial, ProviderCredentialTokenGrant,
+        ProviderCredentialTokenGrantAudienceOverride, ProviderProfile, ProviderProfileCategory,
+        ProviderProfileCredential, ProviderProfileImportItem, Sandbox, SandboxSpec,
+        StoredProviderProfile, UpdateProviderProfilesRequest,
     };
     use openshell_core::{ObjectId, ObjectName};
     use std::collections::HashMap;
@@ -3812,6 +3815,77 @@ mod tests {
             .unwrap_err();
             assert_eq!(missing.code(), Code::NotFound);
         }
+    }
+
+    #[tokio::test]
+    async fn lint_provider_profiles_checks_conflicts_in_request_workspace() {
+        let state = test_server_state().await;
+
+        handle_import_provider_profiles(
+            &state,
+            Request::new(ImportProviderProfilesRequest {
+                profiles: vec![ProviderProfileImportItem {
+                    profile: Some(custom_profile("scoped-lint")),
+                    source: "scoped-lint.yaml".to_string(),
+                }],
+                workspace: "default".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let conflict = handle_lint_provider_profiles(
+            &state,
+            Request::new(LintProviderProfilesRequest {
+                profiles: vec![ProviderProfileImportItem {
+                    profile: Some(custom_profile("scoped-lint")),
+                    source: "scoped-lint.yaml".to_string(),
+                }],
+                workspace: "default".to_string(),
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+        assert!(
+            !conflict.valid,
+            "lint should detect conflict with existing profile in the same workspace"
+        );
+        assert!(conflict.diagnostics.iter().any(|d| {
+            d.profile_id == "scoped-lint" && d.message.contains("already exists")
+        }));
+
+        crate::grpc::workspace::handle_create_workspace(
+            &state,
+            Request::new(CreateWorkspaceRequest {
+                name: "alpha".to_string(),
+                labels: HashMap::new(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let no_conflict = handle_lint_provider_profiles(
+            &state,
+            Request::new(LintProviderProfilesRequest {
+                profiles: vec![ProviderProfileImportItem {
+                    profile: Some(custom_profile("scoped-lint")),
+                    source: "scoped-lint.yaml".to_string(),
+                }],
+                workspace: "alpha".to_string(),
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+        assert!(
+            no_conflict
+                .diagnostics
+                .iter()
+                .all(|d| d.profile_id != "scoped-lint"
+                    || !d.message.contains("already exists")),
+            "lint against different workspace should not see profile from default"
+        );
     }
 
     #[tokio::test]
