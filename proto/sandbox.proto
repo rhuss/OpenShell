@@ -329,4 +329,7 @@ message GetSandboxConfigResponse {
   // Fingerprint for provider credential inputs attached to this sandbox.
   // Changes when attached provider names or attached provider records change.
   uint64 provider_env_revision = 8;
+  // Workspace the sandbox belongs to. Allows the supervisor to learn its
+  // workspace context for subsequent workspace-scoped RPCs.
+  string workspace = 9;
 }
