@@ -27,7 +27,7 @@ use openshell_core::telemetry::{
     LifecycleOperation, LifecycleResource, SandboxTemplateSource, TelemetryComputeDriver,
     TelemetryOutcome,
 };
-use openshell_core::{ObjectId, ObjectName};
+use openshell_core::{ObjectId, ObjectName, ObjectWorkspace};
 use prost::Message;
 use std::net::IpAddr;
 use std::pin::Pin;
@@ -135,6 +135,9 @@ async fn handle_create_sandbox_inner(
     }
     crate::grpc::validation::validate_annotations(&request.annotations, "annotations")?;
 
+    let workspace =
+        super::workspace::resolve_workspace(state.store.as_ref(), &request.workspace).await?;
+
     let _sandbox_sync_guard = if spec.providers.is_empty() {
         None
     } else {
@@ -145,12 +148,13 @@ async fn handle_create_sandbox_inner(
     for name in &spec.providers {
         state
             .store
-            .get_message_by_name::<Provider>(name)
+            .get_message_by_name::<Provider>(&workspace, name)
             .await
             .map_err(|e| Status::internal(format!("fetch provider failed: {e}")))?
             .ok_or_else(|| Status::failed_precondition(format!("provider '{name}' not found")))?;
     }
-    validate_provider_environment_keys_unique(state.store.as_ref(), &spec.providers).await?;
+    validate_provider_environment_keys_unique(state.store.as_ref(), &workspace, &spec.providers)
+        .await?;
 
     // Ensure the template always carries the resolved image.
     let mut spec = spec;
@@ -183,7 +187,7 @@ async fn handle_create_sandbox_inner(
             created_at_ms: now_ms,
             labels: request.labels.clone(),
             resource_version: 0,
-            annotations: request.annotations.clone(),
+            workspace,
         }),
         spec: Some(spec),
         status: None,
@@ -238,14 +242,16 @@ pub(super) async fn handle_get_sandbox(
     state: &Arc<ServerState>,
     request: Request<GetSandboxRequest>,
 ) -> Result<Response<SandboxResponse>, Status> {
-    let name = request.into_inner().name;
-    if name.is_empty() {
+    let req = request.into_inner();
+    if req.name.is_empty() {
         return Err(Status::invalid_argument("name is required"));
     }
+    let workspace =
+        super::workspace::resolve_workspace(state.store.as_ref(), &req.workspace).await?;
 
     let sandbox = state
         .store
-        .get_message_by_name::<Sandbox>(&name)
+        .get_message_by_name::<Sandbox>(&workspace, &req.name)
         .await
         .map_err(|e| Status::internal(format!("fetch sandbox failed: {e}")))?;
 
@@ -260,21 +266,56 @@ pub(super) async fn handle_list_sandboxes(
     request: Request<ListSandboxesRequest>,
 ) -> Result<Response<ListSandboxesResponse>, Status> {
     let request = request.into_inner();
+    if request.all_workspaces && !request.workspace.is_empty() {
+        return Err(Status::invalid_argument(
+            "all_workspaces and workspace are mutually exclusive",
+        ));
+    }
     let limit = clamp_limit(request.limit, 100, MAX_PAGE_SIZE);
 
-    let sandboxes: Vec<Sandbox> = if request.label_selector.is_empty() {
-        state
-            .store
-            .list_messages(limit, request.offset)
-            .await
-            .map_err(|e| Status::internal(format!("list sandboxes failed: {e}")))?
+    let sandboxes: Vec<Sandbox> = if request.all_workspaces {
+        if request.label_selector.is_empty() {
+            state
+                .store
+                .list_all_messages(limit, request.offset)
+                .await
+                .map_err(|e| Status::internal(format!("list sandboxes failed: {e}")))?
+        } else {
+            crate::grpc::validation::validate_label_selector(&request.label_selector)?;
+            state
+                .store
+                .list_all_messages_with_selector(
+                    &request.label_selector,
+                    limit,
+                    request.offset,
+                )
+                .await
+                .map_err(|e| Status::internal(format!("list sandboxes failed: {e}")))?
+        }
     } else {
-        crate::grpc::validation::validate_label_selector(&request.label_selector)?;
-        state
-            .store
-            .list_messages_with_selector(&request.label_selector, limit, request.offset)
-            .await
-            .map_err(|e| Status::internal(format!("list sandboxes with selector failed: {e}")))?
+        let workspace =
+            super::workspace::resolve_workspace(state.store.as_ref(), &request.workspace).await?;
+        if request.label_selector.is_empty() {
+            state
+                .store
+                .list_messages(&workspace, limit, request.offset)
+                .await
+                .map_err(|e| Status::internal(format!("list sandboxes failed: {e}")))?
+        } else {
+            crate::grpc::validation::validate_label_selector(&request.label_selector)?;
+            state
+                .store
+                .list_messages_with_selector(
+                    &workspace,
+                    &request.label_selector,
+                    limit,
+                    request.offset,
+                )
+                .await
+                .map_err(|e| {
+                    Status::internal(format!("list sandboxes with selector failed: {e}"))
+                })?
+        }
     };
 
     Ok(Response::new(ListSandboxesResponse { sandboxes }))
@@ -284,8 +325,11 @@ pub(super) async fn handle_list_sandbox_providers(
     state: &Arc<ServerState>,
     request: Request<ListSandboxProvidersRequest>,
 ) -> Result<Response<ListSandboxProvidersResponse>, Status> {
-    let sandbox = sandbox_by_name(state, &request.into_inner().sandbox_name).await?;
-    let providers = providers_for_sandbox(state, &sandbox).await?;
+    let req = request.into_inner();
+    let workspace =
+        super::workspace::resolve_workspace(state.store.as_ref(), &req.workspace).await?;
+    let sandbox = sandbox_by_name(state, &workspace, &req.sandbox_name).await?;
+    let providers = providers_for_sandbox(state, &sandbox, &workspace).await?;
     Ok(Response::new(ListSandboxProvidersResponse { providers }))
 }
 
@@ -294,6 +338,8 @@ pub(super) async fn handle_attach_sandbox_provider(
     request: Request<AttachSandboxProviderRequest>,
 ) -> Result<Response<AttachSandboxProviderResponse>, Status> {
     let request = request.into_inner();
+    let workspace =
+        super::workspace::resolve_workspace(state.store.as_ref(), &request.workspace).await?;
     if request.provider_name.is_empty() {
         return Err(Status::invalid_argument("provider_name is required"));
     }
@@ -308,7 +354,7 @@ pub(super) async fn handle_attach_sandbox_provider(
         )));
     }
 
-    get_provider_record(state.store.as_ref(), &request.provider_name)
+    get_provider_record(state.store.as_ref(), &workspace, &request.provider_name)
         .await
         .map_err(|err| {
             if err.code() == tonic::Code::NotFound {
@@ -322,7 +368,7 @@ pub(super) async fn handle_attach_sandbox_provider(
         })?;
 
     let _sandbox_sync_guard = state.compute.sandbox_sync_guard().await;
-    let sandbox = sandbox_by_name(state, &request.sandbox_name).await?;
+    let sandbox = sandbox_by_name(state, &workspace, &request.sandbox_name).await?;
     let sandbox_id = sandbox
         .metadata
         .as_ref()
@@ -358,8 +404,12 @@ pub(super) async fn handle_attach_sandbox_provider(
         candidate_spec.providers.push(request.provider_name.clone());
     }
     validate_sandbox_spec(&request.sandbox_name, &candidate_spec)?;
-    validate_provider_environment_keys_unique(state.store.as_ref(), &candidate_spec.providers)
-        .await?;
+    validate_provider_environment_keys_unique(
+        state.store.as_ref(),
+        &workspace,
+        &candidate_spec.providers,
+    )
+    .await?;
 
     let provider_name = request.provider_name.clone();
     let attached = Arc::new(AtomicBool::new(false));
@@ -408,6 +458,8 @@ pub(super) async fn handle_detach_sandbox_provider(
     request: Request<DetachSandboxProviderRequest>,
 ) -> Result<Response<DetachSandboxProviderResponse>, Status> {
     let request = request.into_inner();
+    let workspace =
+        super::workspace::resolve_workspace(state.store.as_ref(), &request.workspace).await?;
     if request.provider_name.is_empty() {
         return Err(Status::invalid_argument("provider_name is required"));
     }
@@ -422,7 +474,7 @@ pub(super) async fn handle_detach_sandbox_provider(
     }
 
     let _sandbox_sync_guard = state.compute.sandbox_sync_guard().await;
-    let sandbox = sandbox_by_name(state, &request.sandbox_name).await?;
+    let sandbox = sandbox_by_name(state, &workspace, &request.sandbox_name).await?;
     let sandbox_id = sandbox
         .metadata
         .as_ref()
@@ -499,19 +551,22 @@ async fn handle_delete_sandbox_inner(
     state: &Arc<ServerState>,
     request: Request<DeleteSandboxRequest>,
 ) -> Result<Response<DeleteSandboxResponse>, Status> {
-    let name = request.into_inner().name;
+    let req = request.into_inner();
+    let name = req.name;
     if name.is_empty() {
         return Err(Status::invalid_argument("name is required"));
     }
+    let workspace =
+        super::workspace::resolve_workspace(state.store.as_ref(), &req.workspace).await?;
 
     let sandbox_id = state
         .store
-        .get_message_by_name::<Sandbox>(&name)
+        .get_message_by_name::<Sandbox>(&workspace, &name)
         .await
         .ok()
         .flatten()
         .map(|sandbox| sandbox.object_id().to_string());
-    let deleted = state.compute.delete_sandbox(&name).await?;
+    let deleted = state.compute.delete_sandbox(&workspace, &name).await?;
     if deleted && let Some(sandbox_id) = sandbox_id {
         state.telemetry.end_sandbox_session(&sandbox_id);
     }
@@ -519,14 +574,18 @@ async fn handle_delete_sandbox_inner(
     Ok(Response::new(DeleteSandboxResponse { deleted }))
 }
 
-async fn sandbox_by_name(state: &Arc<ServerState>, name: &str) -> Result<Sandbox, Status> {
+async fn sandbox_by_name(
+    state: &Arc<ServerState>,
+    workspace: &str,
+    name: &str,
+) -> Result<Sandbox, Status> {
     if name.is_empty() {
         return Err(Status::invalid_argument("sandbox_name is required"));
     }
 
     state
         .store
-        .get_message_by_name::<Sandbox>(name)
+        .get_message_by_name::<Sandbox>(workspace, name)
         .await
         .map_err(|e| Status::internal(format!("fetch sandbox failed: {e}")))?
         .ok_or_else(|| Status::not_found("sandbox not found"))
@@ -535,6 +594,7 @@ async fn sandbox_by_name(state: &Arc<ServerState>, name: &str) -> Result<Sandbox
 async fn providers_for_sandbox(
     state: &Arc<ServerState>,
     sandbox: &Sandbox,
+    workspace: &str,
 ) -> Result<Vec<Provider>, Status> {
     let provider_names = sandbox
         .spec
@@ -544,7 +604,7 @@ async fn providers_for_sandbox(
 
     let mut providers = Vec::with_capacity(provider_names.len());
     for name in provider_names {
-        let provider = get_provider_record(state.store.as_ref(), name)
+        let provider = get_provider_record(state.store.as_ref(), workspace, name)
             .await
             .map_err(|err| {
                 if err.code() == tonic::Code::NotFound {
@@ -1363,7 +1423,7 @@ pub(super) async fn handle_create_ssh_session(
             created_at_ms: now_ms,
             labels: std::collections::HashMap::new(),
             resource_version: 0,
-            annotations: std::collections::HashMap::new(),
+            workspace: sandbox.object_workspace().to_string(),
         }),
         sandbox_id: req.sandbox_id.clone(),
         token: token.clone(),
@@ -1381,6 +1441,7 @@ pub(super) async fn handle_create_ssh_session(
             SshSession::object_type(),
             &token,
             session.object_name(),
+            session.object_workspace(),
             &session.encode_to_vec(),
             None,
             WriteCondition::MustCreate,
@@ -1439,6 +1500,7 @@ pub(super) async fn handle_revoke_ssh_session(
             SshSession::object_type(),
             session.object_id(),
             session.object_name(),
+            session.object_workspace(),
             &session.encode_to_vec(),
             None,
             WriteCondition::MatchResourceVersion(resource_version),
@@ -2309,13 +2371,14 @@ mod tests {
                 created_at_ms: 1_000_000,
                 labels: HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             r#type: provider_type.to_string(),
             credentials: std::iter::once((credential_key.to_string(), "secret".to_string()))
                 .collect(),
             config: HashMap::new(),
             credential_expires_at_ms: HashMap::new(),
+            profile_workspace: "default".to_string(),
         }
     }
 
@@ -2327,7 +2390,7 @@ mod tests {
                 created_at_ms: 1_000_000,
                 labels: std::iter::once(("team".to_string(), "agents".to_string())).collect(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             spec: Some(openshell_core::proto::SandboxSpec {
                 log_level: "debug".to_string(),
@@ -2362,6 +2425,7 @@ mod tests {
                 sandbox_name: "work".to_string(),
                 provider_name: "work-github".to_string(),
                 expected_resource_version: 0,
+                workspace: String::new(),
             }),
         )
         .await
@@ -2371,7 +2435,7 @@ mod tests {
         assert!(response.attached);
         let sandbox = state
             .store
-            .get_message_by_name::<Sandbox>("work")
+            .get_message_by_name::<Sandbox>("default", "work")
             .await
             .unwrap()
             .unwrap();
@@ -2405,6 +2469,7 @@ mod tests {
                 sandbox_name: "work".to_string(),
                 provider_name: "work-github".to_string(),
                 expected_resource_version: 0,
+                workspace: String::new(),
             }),
         )
         .await
@@ -2414,7 +2479,7 @@ mod tests {
         assert!(!response.attached);
         let providers = state
             .store
-            .get_message_by_name::<Sandbox>("work")
+            .get_message_by_name::<Sandbox>("default", "work")
             .await
             .unwrap()
             .unwrap()
@@ -2446,6 +2511,7 @@ mod tests {
                 sandbox_name: "work".to_string(),
                 provider_name: "work-github".to_string(),
                 expected_resource_version: 0,
+                workspace: String::new(),
             }),
         )
         .await
@@ -2455,7 +2521,7 @@ mod tests {
         assert!(response.detached);
         let providers = state
             .store
-            .get_message_by_name::<Sandbox>("work")
+            .get_message_by_name::<Sandbox>("default", "work")
             .await
             .unwrap()
             .unwrap()
@@ -2470,6 +2536,7 @@ mod tests {
                 sandbox_name: "work".to_string(),
                 provider_name: "work-github".to_string(),
                 expected_resource_version: 0,
+                workspace: String::new(),
             }),
         )
         .await
@@ -2496,6 +2563,7 @@ mod tests {
             &state,
             Request::new(ListSandboxProvidersRequest {
                 sandbox_name: "work".to_string(),
+                workspace: String::new(),
             }),
         )
         .await
@@ -2525,6 +2593,7 @@ mod tests {
                 sandbox_name: "work".to_string(),
                 provider_name: "missing".to_string(),
                 expected_resource_version: 0,
+                workspace: String::new(),
             }),
         )
         .await
@@ -2698,7 +2767,7 @@ mod tests {
                     ..Default::default()
                 }),
                 labels: HashMap::new(),
-                annotations: HashMap::new(),
+                workspace: String::new(),
             }),
         )
         .await
@@ -2731,7 +2800,7 @@ mod tests {
                     ..Default::default()
                 }),
                 labels: HashMap::new(),
-                annotations: HashMap::new(),
+                workspace: String::new(),
             }),
         )
         .await
@@ -2830,7 +2899,7 @@ mod tests {
                         ..Default::default()
                     }),
                     labels: HashMap::new(),
-                    annotations: HashMap::new(),
+                    workspace: String::new(),
                 }),
             )
             .await
@@ -2880,6 +2949,7 @@ mod tests {
                 sandbox_name: "work".to_string(),
                 provider_name: "provider-b".to_string(),
                 expected_resource_version: 0,
+                workspace: String::new(),
             }),
         )
         .await
@@ -2926,6 +2996,7 @@ mod tests {
                 sandbox_name: "work".to_string(),
                 provider_name: "provider-31".to_string(),
                 expected_resource_version: 0,
+                workspace: String::new(),
             }),
         )
         .await
@@ -2935,7 +3006,7 @@ mod tests {
         assert!(response.attached);
         let providers = state
             .store
-            .get_message_by_name::<Sandbox>("work")
+            .get_message_by_name::<Sandbox>("default", "work")
             .await
             .unwrap()
             .unwrap()
@@ -2980,6 +3051,7 @@ mod tests {
                 sandbox_name: "work".to_string(),
                 provider_name: "provider-32".to_string(),
                 expected_resource_version: 0,
+                workspace: String::new(),
             }),
         )
         .await
@@ -2991,7 +3063,7 @@ mod tests {
         // Verify sandbox was not modified
         let providers = state
             .store
-            .get_message_by_name::<Sandbox>("work")
+            .get_message_by_name::<Sandbox>("default", "work")
             .await
             .unwrap()
             .unwrap()
@@ -3026,6 +3098,7 @@ mod tests {
                 sandbox_name: "work".to_string(),
                 provider_name: long_name,
                 expected_resource_version: 0,
+                workspace: String::new(),
             }),
         )
         .await
@@ -3052,6 +3125,7 @@ mod tests {
                 sandbox_name: "work".to_string(),
                 provider_name: long_name,
                 expected_resource_version: 0,
+                workspace: String::new(),
             }),
         )
         .await
@@ -3203,7 +3277,7 @@ mod tests {
         // Fetch the sandbox to get its current resource_version
         let sandbox = state
             .store
-            .get_message_by_name::<Sandbox>("work")
+            .get_message_by_name::<Sandbox>("default", "work")
             .await
             .unwrap()
             .unwrap();
@@ -3216,6 +3290,7 @@ mod tests {
                 sandbox_name: "work".to_string(),
                 provider_name: "github".to_string(),
                 expected_resource_version: current_version,
+                workspace: String::new(),
             }),
         )
         .await
@@ -3227,7 +3302,7 @@ mod tests {
         // Verify the resource_version incremented
         let updated_sandbox = state
             .store
-            .get_message_by_name::<Sandbox>("work")
+            .get_message_by_name::<Sandbox>("default", "work")
             .await
             .unwrap()
             .unwrap();
@@ -3254,7 +3329,7 @@ mod tests {
         // Get current version
         let sandbox = state
             .store
-            .get_message_by_name::<Sandbox>("work")
+            .get_message_by_name::<Sandbox>("default", "work")
             .await
             .unwrap()
             .unwrap();
@@ -3267,6 +3342,7 @@ mod tests {
                 sandbox_name: "work".to_string(),
                 provider_name: "github".to_string(),
                 expected_resource_version: 99,
+                workspace: String::new(),
             }),
         )
         .await
@@ -3284,7 +3360,7 @@ mod tests {
         // Verify the sandbox was not modified
         let unchanged_sandbox = state
             .store
-            .get_message_by_name::<Sandbox>("work")
+            .get_message_by_name::<Sandbox>("default", "work")
             .await
             .unwrap()
             .unwrap();
@@ -3316,7 +3392,7 @@ mod tests {
         // Fetch the sandbox to get its current resource_version
         let sandbox = state
             .store
-            .get_message_by_name::<Sandbox>("work")
+            .get_message_by_name::<Sandbox>("default", "work")
             .await
             .unwrap()
             .unwrap();
@@ -3329,6 +3405,7 @@ mod tests {
                 sandbox_name: "work".to_string(),
                 provider_name: "github".to_string(),
                 expected_resource_version: current_version,
+                workspace: String::new(),
             }),
         )
         .await
@@ -3340,7 +3417,7 @@ mod tests {
         // Verify the resource_version incremented
         let updated_sandbox = state
             .store
-            .get_message_by_name::<Sandbox>("work")
+            .get_message_by_name::<Sandbox>("default", "work")
             .await
             .unwrap()
             .unwrap();
@@ -3367,7 +3444,7 @@ mod tests {
         // Get current version
         let sandbox = state
             .store
-            .get_message_by_name::<Sandbox>("work")
+            .get_message_by_name::<Sandbox>("default", "work")
             .await
             .unwrap()
             .unwrap();
@@ -3380,6 +3457,7 @@ mod tests {
                 sandbox_name: "work".to_string(),
                 provider_name: "github".to_string(),
                 expected_resource_version: 99,
+                workspace: String::new(),
             }),
         )
         .await
@@ -3397,7 +3475,7 @@ mod tests {
         // Verify the sandbox was not modified
         let unchanged_sandbox = state
             .store
-            .get_message_by_name::<Sandbox>("work")
+            .get_message_by_name::<Sandbox>("default", "work")
             .await
             .unwrap()
             .unwrap();
@@ -3440,7 +3518,7 @@ mod tests {
         // All three clients fetch the sandbox and see version 1
         let initial_version = state
             .store
-            .get_message_by_name::<Sandbox>("work")
+            .get_message_by_name::<Sandbox>("default", "work")
             .await
             .unwrap()
             .unwrap()
@@ -3460,6 +3538,7 @@ mod tests {
                         sandbox_name: "work".to_string(),
                         provider_name: format!("provider-{i}"),
                         expected_resource_version: initial_version,
+                        workspace: String::new(),
                     }),
                 )
                 .await
@@ -3496,7 +3575,7 @@ mod tests {
         // Final sandbox should have exactly 1 provider and resource_version = initial_version + 1
         let final_sandbox = state
             .store
-            .get_message_by_name::<Sandbox>("work")
+            .get_message_by_name::<Sandbox>("default", "work")
             .await
             .unwrap()
             .unwrap();
@@ -3505,5 +3584,215 @@ mod tests {
             final_sandbox.metadata.as_ref().unwrap().resource_version,
             initial_version + 1
         );
+    }
+
+    #[tokio::test]
+    async fn sandbox_crud_is_workspace_isolated() {
+        use crate::persistence::ObjectType;
+        use openshell_core::proto::{
+            CreateWorkspaceRequest, GetSandboxRequest, ListSandboxesRequest,
+        };
+
+        let state = test_server_state().await;
+
+        // Create a second workspace "beta".
+        crate::grpc::workspace::handle_create_workspace(
+            &state,
+            Request::new(CreateWorkspaceRequest {
+                name: "beta".to_string(),
+                labels: HashMap::new(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        // Seed a sandbox named "shared-name" in each workspace.
+        let mut sbx_default = test_sandbox("shared-name", Vec::new());
+        sbx_default.metadata.as_mut().unwrap().id = "sbx-default-id".to_string();
+        sbx_default.metadata.as_mut().unwrap().workspace = "default".to_string();
+        state.store.put_message(&sbx_default).await.unwrap();
+
+        let mut sbx_beta = test_sandbox("shared-name", Vec::new());
+        sbx_beta.metadata.as_mut().unwrap().id = "sbx-beta-id".to_string();
+        sbx_beta.metadata.as_mut().unwrap().workspace = "beta".to_string();
+        state.store.put_message(&sbx_beta).await.unwrap();
+
+        // Get in "default" returns the default sandbox.
+        let got = handle_get_sandbox(
+            &state,
+            Request::new(GetSandboxRequest {
+                name: "shared-name".to_string(),
+                workspace: "default".to_string(),
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+        assert_eq!(got.sandbox.as_ref().unwrap().object_id(), "sbx-default-id");
+
+        // Get in "beta" returns the beta sandbox.
+        let got = handle_get_sandbox(
+            &state,
+            Request::new(GetSandboxRequest {
+                name: "shared-name".to_string(),
+                workspace: "beta".to_string(),
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+        assert_eq!(got.sandbox.as_ref().unwrap().object_id(), "sbx-beta-id");
+
+        // List in "default" returns 1 sandbox.
+        let listed = handle_list_sandboxes(
+            &state,
+            Request::new(ListSandboxesRequest {
+                limit: 100,
+                offset: 0,
+                label_selector: String::new(),
+                workspace: "default".to_string(),
+                all_workspaces: false,
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+        assert_eq!(listed.sandboxes.len(), 1);
+        assert_eq!(listed.sandboxes[0].object_id(), "sbx-default-id",);
+
+        // List in "beta" returns 1 sandbox.
+        let listed = handle_list_sandboxes(
+            &state,
+            Request::new(ListSandboxesRequest {
+                limit: 100,
+                offset: 0,
+                label_selector: String::new(),
+                workspace: "beta".to_string(),
+                all_workspaces: false,
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+        assert_eq!(listed.sandboxes.len(), 1);
+        assert_eq!(listed.sandboxes[0].object_id(), "sbx-beta-id");
+
+        // Delete in "default" (via store) does not affect "beta".
+        state
+            .store
+            .delete_by_name(Sandbox::object_type(), "default", "shared-name")
+            .await
+            .unwrap();
+
+        // "default" now has 0 sandboxes.
+        let listed = handle_list_sandboxes(
+            &state,
+            Request::new(ListSandboxesRequest {
+                limit: 100,
+                offset: 0,
+                label_selector: String::new(),
+                workspace: "default".to_string(),
+                all_workspaces: false,
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+        assert!(listed.sandboxes.is_empty());
+
+        // "beta" still has its sandbox.
+        let got = handle_get_sandbox(
+            &state,
+            Request::new(GetSandboxRequest {
+                name: "shared-name".to_string(),
+                workspace: "beta".to_string(),
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+        assert_eq!(got.sandbox.as_ref().unwrap().object_id(), "sbx-beta-id");
+
+        // all_workspaces returns sandboxes from all workspaces.
+        // Re-create the "default" sandbox so both workspaces have one.
+        state
+            .store
+            .put(
+                Sandbox::object_type(),
+                "sbx-default-2",
+                "sandbox-d",
+                "default",
+                &Sandbox::default().encode_to_vec(),
+                None,
+            )
+            .await
+            .unwrap();
+        let listed = handle_list_sandboxes(
+            &state,
+            Request::new(ListSandboxesRequest {
+                limit: 100,
+                offset: 0,
+                label_selector: String::new(),
+                workspace: String::new(),
+                all_workspaces: true,
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+        assert_eq!(listed.sandboxes.len(), 2);
+
+        // all_workspaces with non-empty workspace is rejected.
+        let err = handle_list_sandboxes(
+            &state,
+            Request::new(ListSandboxesRequest {
+                limit: 100,
+                offset: 0,
+                label_selector: String::new(),
+                workspace: "default".to_string(),
+                all_workspaces: true,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn revoke_ssh_session_preserves_workspace() {
+        let state = test_server_state().await;
+        state
+            .store
+            .put_message(&test_sandbox("ws-test", Vec::new()))
+            .await
+            .unwrap();
+
+        let response = handle_create_ssh_session(
+            &state,
+            Request::new(CreateSshSessionRequest {
+                sandbox_id: "sandbox-ws-test".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+        let token = response.into_inner().token;
+
+        handle_revoke_ssh_session(
+            &state,
+            Request::new(RevokeSshSessionRequest {
+                token: token.clone(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let session: SshSession = state
+            .store
+            .get_message::<SshSession>(&token)
+            .await
+            .unwrap()
+            .expect("session should still exist after revocation");
+        assert!(session.revoked);
+        assert_eq!(session.object_workspace(), "default");
     }
 }
