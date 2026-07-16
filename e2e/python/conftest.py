@@ -56,6 +56,7 @@ def ensure_sandbox_persistence_ready(sandbox_client: SandboxClient) -> None:
 def sandbox(cluster_name: str | None) -> Callable[..., Sandbox]:
     def _create(*, spec: object | None = None, delete_on_exit: bool = True) -> Sandbox:
         return Sandbox(
+            workspace="default",
             cluster=cluster_name,
             spec=spec,
             delete_on_exit=delete_on_exit,
