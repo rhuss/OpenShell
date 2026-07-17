@@ -12,11 +12,10 @@
 
 use crate::ServerState;
 use crate::auth::principal::Principal;
-use crate::persistence::{DraftChunkRecord, ObjectId, ObjectName, ObjectType, PolicyRecord, Store};
-use crate::policy_store::{AtomicPolicyRevisionWrite, PolicyStoreExt};
-use crate::provider_profile_sources::EffectiveProviderProfileCatalog;
-#[cfg(test)]
-use crate::provider_profile_sources::ProviderProfileSources;
+use crate::persistence::{
+    DraftChunkRecord, ObjectId, ObjectName, ObjectType, ObjectWorkspace, PolicyRecord, Store,
+};
+use crate::policy_store::PolicyStoreExt;
 use openshell_core::net::is_internal_ip;
 use openshell_core::proto::policy_merge_operation;
 use openshell_core::proto::setting_value;
@@ -522,14 +521,14 @@ fn run_prover_findings(
 /// with the merged policy the prover validates against.
 async fn build_credential_set_for_sandbox_with_catalog(
     store: &Store,
-    catalog: &EffectiveProviderProfileCatalog,
+    workspace: &str,
     provider_names: &[String],
 ) -> Result<CredentialSet, Status> {
     let mut credentials = Vec::new();
 
     for name in provider_names {
         let Some(provider) = store
-            .get_message_by_name::<Provider>(name)
+            .get_message_by_name::<Provider>(workspace, name)
             .await
             .map_err(|e| Status::internal(format!("failed to fetch provider '{name}': {e}")))?
         else {
@@ -538,16 +537,32 @@ async fn build_credential_set_for_sandbox_with_catalog(
         };
 
         let provider_type = provider.r#type.trim();
-        let profile_id = normalize_provider_type(provider_type).unwrap_or(provider_type);
-        let Some(profile) =
-            super::provider::get_provider_type_profile_with_catalog(catalog, profile_id)
-        else {
-            warn!(
-                provider_name = %name,
+        let profile = if let Some(canonical_type) = normalize_provider_type(provider_type) {
+            let Some(profile) = get_default_profile(canonical_type) else {
+                warn!(
+                    provider_name = %name,
+                    provider_type,
+                    "legacy provider type has no profile; skipping credential entry"
+                );
+                continue;
+            };
+            profile.clone()
+        } else {
+            let Some(profile) = super::provider::get_provider_type_profile(
+                store,
+                &provider.profile_workspace,
                 provider_type,
-                "provider type has no profile; skipping credential entry"
-            );
-            continue;
+            )
+            .await?
+            else {
+                warn!(
+                    provider_name = %name,
+                    provider_type,
+                    "provider type has no profile; skipping credential entry"
+                );
+                continue;
+            };
+            profile
         };
 
         let target_hosts: Vec<String> = profile
@@ -881,6 +896,7 @@ async fn self_reject_mechanistic_if_already_covered(
 /// manual.
 async fn resolve_proposal_approval_mode(
     store: &Store,
+    workspace: &str,
     sandbox_name: &str,
 ) -> Result<(bool, &'static str), Status> {
     let global = load_global_settings(store).await?;
@@ -890,7 +906,7 @@ async fn resolve_proposal_approval_mode(
         return Ok((value == "auto", "gateway"));
     }
 
-    let sandbox = load_sandbox_settings(store, sandbox_name).await?;
+    let sandbox = load_sandbox_settings(store, workspace, sandbox_name).await?;
     if let Some(StoredSettingValue::String(value)) =
         sandbox.settings.get(settings::PROPOSAL_APPROVAL_MODE_KEY)
     {
@@ -903,6 +919,7 @@ async fn resolve_proposal_approval_mode(
 async fn auto_approve_chunk(
     state: &Arc<ServerState>,
     sandbox_id: &str,
+    workspace: &str,
     sandbox_name: &str,
     chunk_id: &str,
     source: &str,
@@ -930,7 +947,8 @@ async fn auto_approve_chunk(
         return Ok(());
     }
 
-    let (version, hash) = merge_chunk_into_policy(state.store.as_ref(), sandbox_id, &chunk).await?;
+    let (version, hash) =
+        merge_chunk_into_policy(state.store.as_ref(), sandbox_id, workspace, &chunk).await?;
     let chunk_summary = summarize_draft_chunk_rule(&chunk)?;
 
     let now_ms = current_time_ms();
@@ -979,7 +997,7 @@ async fn auto_approve_chunk(
 // agent-authored proposal validation slice.
 async fn current_effective_policy_for_sandbox(
     state: &ServerState,
-    catalog: &EffectiveProviderProfileCatalog,
+    workspace: &str,
     sandbox: &Sandbox,
     sandbox_id: &str,
 ) -> Result<ProtoSandboxPolicy, Status> {
@@ -1016,12 +1034,9 @@ async fn current_effective_policy_for_sandbox(
             .as_ref()
             .map(|spec| spec.providers.clone())
             .unwrap_or_default();
-        let provider_layers = profile_provider_policy_layers_with_catalog(
-            state.store.as_ref(),
-            catalog,
-            &provider_names,
-        )
-        .await?;
+        let provider_layers =
+            profile_provider_policy_layers(state.store.as_ref(), workspace, &provider_names)
+                .await?;
         if !provider_layers.is_empty() {
             policy = compose_effective_policy(&policy, &provider_layers);
         }
@@ -1167,11 +1182,12 @@ async fn persist_existing_policy_projection(
 
 async fn resolve_sandbox_by_name_for_principal(
     store: &Store,
+    workspace: &str,
     principal: &Principal,
     name: &str,
 ) -> Result<Sandbox, Status> {
     let sandbox = store
-        .get_message_by_name::<Sandbox>(name)
+        .get_message_by_name::<Sandbox>(workspace, name)
         .await
         .map_err(|e| Status::internal(format!("fetch sandbox failed: {e}")))?;
 
@@ -1218,6 +1234,7 @@ pub(super) async fn handle_get_sandbox_config(
         .await
         .map_err(|e| Status::internal(format!("fetch sandbox failed: {e}")))?
         .ok_or_else(|| Status::not_found("sandbox not found"))?;
+    let workspace = sandbox.object_workspace().to_string();
     let sandbox_provider_names = sandbox
         .spec
         .as_ref()
@@ -1271,7 +1288,7 @@ pub(super) async fn handle_get_sandbox_config(
 
                 if let Err(e) = state
                     .store
-                    .put_policy_revision(&policy_id, &sandbox_id, 1, &payload, &hash)
+                    .put_policy_revision(&policy_id, &sandbox_id, &workspace, 1, &payload, &hash)
                     .await
                 {
                     warn!(
@@ -1303,7 +1320,7 @@ pub(super) async fn handle_get_sandbox_config(
 
     let global_settings = load_global_settings(state.store.as_ref()).await?;
     let sandbox_settings =
-        load_sandbox_settings(state.store.as_ref(), sandbox.object_name()).await?;
+        load_sandbox_settings(state.store.as_ref(), &workspace, sandbox.object_name()).await?;
     let providers_v2_enabled =
         bool_setting_enabled(&global_settings, settings::PROVIDERS_V2_ENABLED_KEY)?;
 
@@ -1329,9 +1346,9 @@ pub(super) async fn handle_get_sandbox_config(
         && !matches!(policy_source, PolicySource::Global)
         && let Some(source_policy) = policy.as_ref()
     {
-        let provider_layers = profile_provider_policy_layers_with_catalog(
+        let provider_layers = profile_provider_policy_layers(
             state.store.as_ref(),
-            &provider_profile_catalog,
+            &workspace,
             &sandbox_provider_names,
         )
         .await?;
@@ -1344,12 +1361,9 @@ pub(super) async fn handle_get_sandbox_config(
 
     let settings = merge_effective_settings(&global_settings, &sandbox_settings)?;
     let config_revision = compute_config_revision(policy.as_ref(), &settings, policy_source);
-    let provider_env_revision = compute_provider_env_revision_with_catalog(
-        state.store.as_ref(),
-        &provider_profile_catalog,
-        &sandbox_provider_names,
-    )
-    .await?;
+    let provider_env_revision =
+        compute_provider_env_revision(state.store.as_ref(), &workspace, &sandbox_provider_names)
+            .await?;
 
     Ok(Response::new(GetSandboxConfigResponse {
         policy,
@@ -1360,12 +1374,14 @@ pub(super) async fn handle_get_sandbox_config(
         policy_source: policy_source.into(),
         global_policy_version,
         provider_env_revision,
+        workspace,
     }))
 }
 
 #[cfg(test)]
 async fn compute_provider_env_revision(
     store: &Store,
+    workspace: &str,
     provider_names: &[String],
 ) -> Result<u64, Status> {
     let catalog = ProviderProfileSources::with_default_sources()
@@ -1385,7 +1401,7 @@ pub(super) async fn compute_provider_env_revision_with_catalog(
     for provider_name in provider_names {
         hasher.update(provider_name.as_bytes());
         match store
-            .get_by_name(Provider::object_type(), provider_name)
+            .get_by_name(Provider::object_type(), workspace, provider_name)
             .await
             .map_err(|e| {
                 Status::internal(format!("fetch provider '{provider_name}' failed: {e}"))
@@ -1398,7 +1414,13 @@ pub(super) async fn compute_provider_env_revision_with_catalog(
                     Status::internal(format!("decode provider '{provider_name}' failed: {e}"))
                 })?;
                 hasher.update(provider.r#type.as_bytes());
-                hash_provider_profile_revision(catalog, &provider.r#type, &mut hasher);
+                hash_provider_profile_revision(
+                    store,
+                    &provider.profile_workspace,
+                    &provider.r#type,
+                    &mut hasher,
+                )
+                .await?;
 
                 let mut credential_keys: Vec<_> = provider.credentials.keys().collect();
                 credential_keys.sort();
@@ -1424,18 +1446,47 @@ pub(super) async fn compute_provider_env_revision_with_catalog(
     )?))
 }
 
-fn hash_provider_profile_revision(
-    catalog: &EffectiveProviderProfileCatalog,
+async fn hash_provider_profile_revision(
+    store: &Store,
+    profile_workspace: &str,
     provider_type: &str,
     hasher: &mut Sha256,
-) {
-    let profile_id = normalize_provider_type(provider_type).unwrap_or(provider_type);
-    catalog.hash_profile_revision(profile_id, hasher);
+) -> Result<(), Status> {
+    if let Some(profile) = get_default_profile(provider_type) {
+        hasher.update(b"builtin-profile");
+        hasher.update(profile.to_proto().encode_to_vec());
+        return Ok(());
+    }
+
+    hasher.update(b"custom-profile");
+    match store
+        .get_by_name(
+            openshell_core::proto::StoredProviderProfile::object_type(),
+            profile_workspace,
+            provider_type,
+        )
+        .await
+        .map_err(|e| {
+            Status::internal(format!(
+                "fetch provider profile '{provider_type}' failed: {e}"
+            ))
+        })? {
+        Some(record) => {
+            hasher.update(record.id.as_bytes());
+            hasher.update(record.updated_at_ms.to_le_bytes());
+            hasher.update(record.payload.as_slice());
+        }
+        None => {
+            hasher.update(b"missing");
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 async fn profile_provider_policy_layers(
     store: &Store,
+    workspace: &str,
     provider_names: &[String],
 ) -> Result<Vec<ProviderPolicyLayer>, Status> {
     let catalog = ProviderProfileSources::with_default_sources()
@@ -1453,22 +1504,38 @@ async fn profile_provider_policy_layers_with_catalog(
 
     for name in provider_names {
         let provider = store
-            .get_message_by_name::<Provider>(name)
+            .get_message_by_name::<Provider>(workspace, name)
             .await
             .map_err(|e| Status::internal(format!("failed to fetch provider '{name}': {e}")))?
             .ok_or_else(|| Status::failed_precondition(format!("provider '{name}' not found")))?;
 
         let provider_type = provider.r#type.trim();
-        let profile_id = normalize_provider_type(provider_type).unwrap_or(provider_type);
-        let Some(profile) =
-            super::provider::get_provider_type_profile_with_catalog(catalog, profile_id)
-        else {
-            warn!(
-                provider_name = %name,
+        let profile = if let Some(canonical_type) = normalize_provider_type(provider_type) {
+            let Some(profile) = get_default_profile(canonical_type) else {
+                warn!(
+                    provider_name = %name,
+                    provider_type,
+                    "legacy provider type has no profile; skipping provider policy layer"
+                );
+                continue;
+            };
+            profile.clone()
+        } else {
+            let Some(profile) = super::provider::get_provider_type_profile(
+                store,
+                &provider.profile_workspace,
                 provider_type,
-                "provider type has no profile; skipping provider policy layer"
-            );
-            continue;
+            )
+            .await?
+            else {
+                warn!(
+                    provider_name = %name,
+                    provider_type,
+                    "provider type has no profile; skipping provider policy layer"
+                );
+                continue;
+            };
+            profile
         };
 
         let rule_name = openshell_policy::provider_rule_name(provider.object_name());
@@ -1517,25 +1584,18 @@ pub(super) async fn handle_get_sandbox_provider_environment(
         .await
         .map_err(|e| Status::internal(format!("fetch sandbox failed: {e}")))?
         .ok_or_else(|| Status::not_found("sandbox not found"))?;
+    let workspace = sandbox.object_workspace().to_string();
 
     let spec = sandbox
         .spec
         .ok_or_else(|| Status::internal("sandbox has no spec"))?;
 
     let provider_names = spec.providers;
-    let provider_profile_catalog = state
-        .provider_profile_sources
-        .snapshot_catalog(state.store.as_ref())
-        .await?;
-    let provider_env_revision = compute_provider_env_revision_with_catalog(
+    let provider_env_revision =
+        compute_provider_env_revision(state.store.as_ref(), &workspace, &provider_names).await?;
+    let provider_environment = super::provider::resolve_provider_environment(
         state.store.as_ref(),
-        &provider_profile_catalog,
-        &provider_names,
-    )
-    .await?;
-    let provider_environment = super::provider::resolve_provider_environment_with_catalog(
-        state.store.as_ref(),
-        &provider_profile_catalog,
+        &workspace,
         &provider_names,
     )
     .await?;
@@ -1583,11 +1643,13 @@ async fn handle_update_config_inner(
     sandbox_caller: bool,
 ) -> Result<Response<UpdateConfigResponse>, Status> {
     let req = request.into_inner();
-    validate_annotations(&req.annotations, "annotations")?;
+    let workspace =
+        super::workspace::resolve_workspace(state.store.as_ref(), &req.workspace).await?;
     if sandbox_caller {
         validate_sandbox_caller_update(&req)?;
         resolve_sandbox_by_name_for_principal(
             state.store.as_ref(),
+            &workspace,
             principal
                 .as_ref()
                 .expect("sandbox_caller implies principal"),
@@ -1683,6 +1745,7 @@ async fn handle_update_config_inner(
                 .put_policy_revision(
                     &policy_id,
                     GLOBAL_POLICY_SANDBOX_ID,
+                    "",
                     next_version,
                     &payload,
                     &hash,
@@ -1789,7 +1852,7 @@ async fn handle_update_config_inner(
     // Resolve sandbox by name.
     let sandbox = state
         .store
-        .get_message_by_name::<Sandbox>(&req.name)
+        .get_message_by_name::<Sandbox>(&workspace, &req.name)
         .await
         .map_err(|e| Status::internal(format!("fetch sandbox failed: {e}")))?
         .ok_or_else(|| Status::not_found("sandbox not found"))?;
@@ -1816,12 +1879,14 @@ async fn handle_update_config_inner(
             }
 
             let mut sandbox_settings =
-                load_sandbox_settings(state.store.as_ref(), sandbox.object_name()).await?;
+                load_sandbox_settings(state.store.as_ref(), &workspace, sandbox.object_name())
+                    .await?;
             let removed = sandbox_settings.settings.remove(key).is_some();
             if removed {
                 sandbox_settings.revision = sandbox_settings.revision.wrapping_add(1);
                 save_sandbox_settings(
                     state.store.as_ref(),
+                    &workspace,
                     sandbox.object_name(),
                     &sandbox_settings,
                 )
@@ -1859,12 +1924,13 @@ async fn handle_update_config_inner(
         let stored = proto_setting_to_stored(key, setting)?;
 
         let mut sandbox_settings =
-            load_sandbox_settings(state.store.as_ref(), sandbox.object_name()).await?;
+            load_sandbox_settings(state.store.as_ref(), &workspace, sandbox.object_name()).await?;
         let changed = upsert_setting_value(&mut sandbox_settings.settings, key, stored);
         if changed {
             sandbox_settings.revision = sandbox_settings.revision.wrapping_add(1);
             save_sandbox_settings(
                 state.store.as_ref(),
+                &workspace,
                 sandbox.object_name(),
                 &sandbox_settings,
             )
@@ -1911,6 +1977,7 @@ async fn handle_update_config_inner(
         let (version, hash, updated_sandbox) = apply_merge_operations_with_retry(
             state.store.as_ref(),
             &sandbox_id,
+            &workspace,
             spec.policy.as_ref(),
             &merge_ops,
             Some(&atomic_context),
@@ -2105,6 +2172,47 @@ async fn handle_update_config_inner(
         );
     }
 
+    let latest = state
+        .store
+        .get_latest_policy(&sandbox_id)
+        .await
+        .map_err(|e| Status::internal(format!("fetch latest policy failed: {e}")))?;
+
+    let payload = new_policy.encode_to_vec();
+    let hash = deterministic_policy_hash(&new_policy);
+
+    if let Some(ref current) = latest
+        && current.policy_hash == hash
+    {
+        return Ok(Response::new(UpdateConfigResponse {
+            version: u32::try_from(current.version).unwrap_or(0),
+            policy_hash: hash,
+            settings_revision: 0,
+            deleted: false,
+        }));
+    }
+
+    let next_version = latest.map_or(1, |r| r.version + 1);
+    let policy_id = uuid::Uuid::new_v4().to_string();
+
+    state
+        .store
+        .put_policy_revision(
+            &policy_id,
+            &sandbox_id,
+            &workspace,
+            next_version,
+            &payload,
+            &hash,
+        )
+        .await
+        .map_err(|e| Status::internal(format!("persist policy revision failed: {e}")))?;
+
+    let _ = state
+        .store
+        .supersede_older_policies(&sandbox_id, next_version)
+        .await;
+
     state.sandbox_watch_bus.notify(&sandbox_id);
 
     info!(
@@ -2133,6 +2241,11 @@ pub(super) async fn handle_get_sandbox_policy_status(
     request: Request<GetSandboxPolicyStatusRequest>,
 ) -> Result<Response<GetSandboxPolicyStatusResponse>, Status> {
     let req = request.into_inner();
+    let workspace = if req.global {
+        String::new()
+    } else {
+        super::workspace::resolve_workspace(state.store.as_ref(), &req.workspace).await?
+    };
 
     let (policy_id, active_version) = if req.global {
         (GLOBAL_POLICY_SANDBOX_ID.to_string(), 0_u32)
@@ -2142,7 +2255,7 @@ pub(super) async fn handle_get_sandbox_policy_status(
         }
         let sandbox = state
             .store
-            .get_message_by_name::<Sandbox>(&req.name)
+            .get_message_by_name::<Sandbox>(&workspace, &req.name)
             .await
             .map_err(|e| Status::internal(format!("fetch sandbox failed: {e}")))?
             .ok_or_else(|| Status::not_found("sandbox not found"))?;
@@ -2184,6 +2297,11 @@ pub(super) async fn handle_list_sandbox_policies(
     request: Request<ListSandboxPoliciesRequest>,
 ) -> Result<Response<ListSandboxPoliciesResponse>, Status> {
     let req = request.into_inner();
+    let workspace = if req.global {
+        String::new()
+    } else {
+        super::workspace::resolve_workspace(state.store.as_ref(), &req.workspace).await?
+    };
 
     let policy_id = if req.global {
         GLOBAL_POLICY_SANDBOX_ID.to_string()
@@ -2193,7 +2311,7 @@ pub(super) async fn handle_list_sandbox_policies(
         }
         let sandbox = state
             .store
-            .get_message_by_name::<Sandbox>(&req.name)
+            .get_message_by_name::<Sandbox>(&workspace, &req.name)
             .await
             .map_err(|e| Status::internal(format!("fetch sandbox failed: {e}")))?
             .ok_or_else(|| Status::not_found("sandbox not found"))?;
@@ -2305,6 +2423,10 @@ pub(super) async fn handle_get_sandbox_logs(
     request: Request<GetSandboxLogsRequest>,
 ) -> Result<Response<GetSandboxLogsResponse>, Status> {
     let req = request.into_inner();
+    // TODO(phase2): workspace is resolved but not used for authorization.
+    // Verify the sandbox belongs to this workspace before returning logs.
+    let _workspace =
+        super::workspace::resolve_workspace(state.store.as_ref(), &req.workspace).await?;
     if req.sandbox_id.is_empty() {
         return Err(Status::invalid_argument("sandbox_id is required"));
     }
@@ -2419,12 +2541,19 @@ pub(super) async fn handle_submit_policy_analysis(
         .cloned()
         .ok_or_else(|| Status::unauthenticated("missing principal"))?;
     let req = request.into_inner();
+    let workspace =
+        super::workspace::resolve_workspace(state.store.as_ref(), &req.workspace).await?;
     if req.name.is_empty() {
         return Err(Status::invalid_argument("name is required"));
     }
 
-    let sandbox =
-        resolve_sandbox_by_name_for_principal(state.store.as_ref(), &principal, &req.name).await?;
+    let sandbox = resolve_sandbox_by_name_for_principal(
+        state.store.as_ref(),
+        &workspace,
+        &principal,
+        &req.name,
+    )
+    .await?;
     let sandbox_id = sandbox.object_id().to_string();
     for summary in &req.network_activity_summaries {
         state
@@ -2451,17 +2580,8 @@ pub(super) async fn handle_submit_policy_analysis(
     // case for the common single-chunk submission shape. If real workloads
     // surface a problem with batches that interact across chunks, the right
     // fix is to recompute baseline after each successful auto-approve.
-    let provider_profile_catalog = state
-        .provider_profile_sources
-        .snapshot_catalog(state.store.as_ref())
-        .await?;
-    let current_policy = current_effective_policy_for_sandbox(
-        state,
-        &provider_profile_catalog,
-        &sandbox,
-        &sandbox_id,
-    )
-    .await?;
+    let current_policy =
+        current_effective_policy_for_sandbox(state, &workspace, &sandbox, &sandbox_id).await?;
 
     // Auto-approval is an opt-in behavior, sourced from the settings model
     // (sandbox or gateway scope) so it can be flipped on a running sandbox
@@ -2469,7 +2589,8 @@ pub(super) async fn handle_submit_policy_analysis(
     // exact "auto") preserves OpenShell's default-deny posture: every
     // proposal lands in `pending` for a human reviewer.
     let (auto_approve_enabled, resolved_from) =
-        resolve_proposal_approval_mode(state.store.as_ref(), sandbox.object_name()).await?;
+        resolve_proposal_approval_mode(state.store.as_ref(), &workspace, sandbox.object_name())
+            .await?;
 
     // The credential set is stable across all chunks in this batch, so build
     // it once. v1 captures presence only — no scope modeling — so the prover
@@ -2480,9 +2601,9 @@ pub(super) async fn handle_submit_policy_analysis(
         .as_ref()
         .map(|spec| spec.providers.clone())
         .unwrap_or_default();
-    let credential_set = build_credential_set_for_sandbox_with_catalog(
+    let credential_set = build_credential_set_for_sandbox(
         state.store.as_ref(),
-        &provider_profile_catalog,
+        &workspace,
         &provider_names_for_creds,
     )
     .await?;
@@ -2598,7 +2719,7 @@ pub(super) async fn handle_submit_policy_analysis(
             .then(|| crate::policy_store::observation_dedup_key(&record));
         let effective_id = state
             .store
-            .put_draft_chunk(&record, dedup_key.as_deref())
+            .put_draft_chunk(&record, dedup_key.as_deref(), &workspace)
             .await
             .map_err(|e| Status::internal(format!("persist draft chunk failed: {e}")))?;
         accepted += 1;
@@ -2652,6 +2773,7 @@ pub(super) async fn handle_submit_policy_analysis(
             && let Err(err) = auto_approve_chunk(
                 state,
                 &sandbox_id,
+                &workspace,
                 sandbox.object_name(),
                 &effective_id,
                 &req.analysis_mode,
@@ -2699,12 +2821,19 @@ pub(super) async fn handle_get_draft_policy(
         .cloned()
         .ok_or_else(|| Status::unauthenticated("missing principal"))?;
     let req = request.into_inner();
+    let workspace =
+        super::workspace::resolve_workspace(state.store.as_ref(), &req.workspace).await?;
     if req.name.is_empty() {
         return Err(Status::invalid_argument("name is required"));
     }
 
-    let sandbox =
-        resolve_sandbox_by_name_for_principal(state.store.as_ref(), &principal, &req.name).await?;
+    let sandbox = resolve_sandbox_by_name_for_principal(
+        state.store.as_ref(),
+        &workspace,
+        &principal,
+        &req.name,
+    )
+    .await?;
     let sandbox_id = sandbox.object_id().to_string();
 
     let status_filter = if req.status_filter.is_empty() {
@@ -2763,6 +2892,8 @@ async fn handle_approve_draft_chunk_inner(
     request: Request<ApproveDraftChunkRequest>,
 ) -> Result<Response<ApproveDraftChunkResponse>, Status> {
     let req = request.into_inner();
+    let workspace =
+        super::workspace::resolve_workspace(state.store.as_ref(), &req.workspace).await?;
     if req.name.is_empty() {
         return Err(Status::invalid_argument("name is required"));
     }
@@ -2774,7 +2905,7 @@ async fn handle_approve_draft_chunk_inner(
 
     let sandbox = state
         .store
-        .get_message_by_name::<Sandbox>(&req.name)
+        .get_message_by_name::<Sandbox>(&workspace, &req.name)
         .await
         .map_err(|e| Status::internal(format!("fetch sandbox failed: {e}")))?
         .ok_or_else(|| Status::not_found("sandbox not found"))?;
@@ -2807,7 +2938,7 @@ async fn handle_approve_draft_chunk_inner(
     );
 
     let (version, hash) =
-        merge_chunk_into_policy(state.store.as_ref(), &sandbox_id, &chunk).await?;
+        merge_chunk_into_policy(state.store.as_ref(), &sandbox_id, &workspace, &chunk).await?;
     let chunk_summary = summarize_draft_chunk_rule(&chunk)?;
 
     let now_ms = current_time_ms();
@@ -2863,6 +2994,8 @@ async fn handle_reject_draft_chunk_inner(
     request: Request<RejectDraftChunkRequest>,
 ) -> Result<Response<RejectDraftChunkResponse>, Status> {
     let req = request.into_inner();
+    let workspace =
+        super::workspace::resolve_workspace(state.store.as_ref(), &req.workspace).await?;
     if req.name.is_empty() {
         return Err(Status::invalid_argument("name is required"));
     }
@@ -2872,7 +3005,7 @@ async fn handle_reject_draft_chunk_inner(
 
     let sandbox = state
         .store
-        .get_message_by_name::<Sandbox>(&req.name)
+        .get_message_by_name::<Sandbox>(&workspace, &req.name)
         .await
         .map_err(|e| Status::internal(format!("fetch sandbox failed: {e}")))?
         .ok_or_else(|| Status::not_found("sandbox not found"))?;
@@ -2908,7 +3041,8 @@ async fn handle_reject_draft_chunk_inner(
 
     if was_approved {
         require_no_global_policy(state).await?;
-        let (version, hash) = remove_chunk_from_policy(state, &sandbox_id, &chunk).await?;
+        let (version, hash) =
+            remove_chunk_from_policy(state, &sandbox_id, &workspace, &chunk).await?;
         emit_gateway_policy_audit_log(
             &sandbox_id,
             sandbox.object_name(),
@@ -2960,6 +3094,8 @@ async fn handle_approve_all_draft_chunks_inner(
     request: Request<ApproveAllDraftChunksRequest>,
 ) -> Result<Response<ApproveAllDraftChunksResponse>, Status> {
     let req = request.into_inner();
+    let workspace =
+        super::workspace::resolve_workspace(state.store.as_ref(), &req.workspace).await?;
     if req.name.is_empty() {
         return Err(Status::invalid_argument("name is required"));
     }
@@ -2968,7 +3104,7 @@ async fn handle_approve_all_draft_chunks_inner(
 
     let sandbox = state
         .store
-        .get_message_by_name::<Sandbox>(&req.name)
+        .get_message_by_name::<Sandbox>(&workspace, &req.name)
         .await
         .map_err(|e| Status::internal(format!("fetch sandbox failed: {e}")))?
         .ok_or_else(|| Status::not_found("sandbox not found"))?;
@@ -3019,7 +3155,7 @@ async fn handle_approve_all_draft_chunks_inner(
         );
 
         let (version, hash) =
-            merge_chunk_into_policy(state.store.as_ref(), &sandbox_id, chunk).await?;
+            merge_chunk_into_policy(state.store.as_ref(), &sandbox_id, &workspace, chunk).await?;
         last_version = version;
         last_hash = hash;
         let chunk_summary = summarize_draft_chunk_rule(chunk)?;
@@ -3081,6 +3217,8 @@ pub(super) async fn handle_edit_draft_chunk(
     request: Request<EditDraftChunkRequest>,
 ) -> Result<Response<EditDraftChunkResponse>, Status> {
     let req = request.into_inner();
+    let workspace =
+        super::workspace::resolve_workspace(state.store.as_ref(), &req.workspace).await?;
     if req.name.is_empty() {
         return Err(Status::invalid_argument("name is required"));
     }
@@ -3093,7 +3231,7 @@ pub(super) async fn handle_edit_draft_chunk(
 
     let sandbox = state
         .store
-        .get_message_by_name::<Sandbox>(&req.name)
+        .get_message_by_name::<Sandbox>(&workspace, &req.name)
         .await
         .map_err(|e| Status::internal(format!("fetch sandbox failed: {e}")))?
         .ok_or_else(|| Status::not_found("sandbox not found"))?;
@@ -3145,6 +3283,8 @@ async fn handle_undo_draft_chunk_inner(
     request: Request<UndoDraftChunkRequest>,
 ) -> Result<Response<UndoDraftChunkResponse>, Status> {
     let req = request.into_inner();
+    let workspace =
+        super::workspace::resolve_workspace(state.store.as_ref(), &req.workspace).await?;
     if req.name.is_empty() {
         return Err(Status::invalid_argument("name is required"));
     }
@@ -3154,7 +3294,7 @@ async fn handle_undo_draft_chunk_inner(
 
     let sandbox = state
         .store
-        .get_message_by_name::<Sandbox>(&req.name)
+        .get_message_by_name::<Sandbox>(&workspace, &req.name)
         .await
         .map_err(|e| Status::internal(format!("fetch sandbox failed: {e}")))?
         .ok_or_else(|| Status::not_found("sandbox not found"))?;
@@ -3184,7 +3324,7 @@ async fn handle_undo_draft_chunk_inner(
         "UndoDraftChunk: removing rule from active policy"
     );
 
-    let (version, hash) = remove_chunk_from_policy(state, &sandbox_id, &chunk).await?;
+    let (version, hash) = remove_chunk_from_policy(state, &sandbox_id, &workspace, &chunk).await?;
 
     // Clear any prior rejection_reason on the way back to "pending" so an
     // agent reading the chunk via policy.local cannot see a stale guidance
@@ -3230,13 +3370,15 @@ pub(super) async fn handle_clear_draft_chunks(
     request: Request<ClearDraftChunksRequest>,
 ) -> Result<Response<ClearDraftChunksResponse>, Status> {
     let req = request.into_inner();
+    let workspace =
+        super::workspace::resolve_workspace(state.store.as_ref(), &req.workspace).await?;
     if req.name.is_empty() {
         return Err(Status::invalid_argument("name is required"));
     }
 
     let sandbox = state
         .store
-        .get_message_by_name::<Sandbox>(&req.name)
+        .get_message_by_name::<Sandbox>(&workspace, &req.name)
         .await
         .map_err(|e| Status::internal(format!("fetch sandbox failed: {e}")))?
         .ok_or_else(|| Status::not_found("sandbox not found"))?;
@@ -3266,13 +3408,15 @@ pub(super) async fn handle_get_draft_history(
     request: Request<GetDraftHistoryRequest>,
 ) -> Result<Response<GetDraftHistoryResponse>, Status> {
     let req = request.into_inner();
+    let workspace =
+        super::workspace::resolve_workspace(state.store.as_ref(), &req.workspace).await?;
     if req.name.is_empty() {
         return Err(Status::invalid_argument("name is required"));
     }
 
     let sandbox = state
         .store
-        .get_message_by_name::<Sandbox>(&req.name)
+        .get_message_by_name::<Sandbox>(&workspace, &req.name)
         .await
         .map_err(|e| Status::internal(format!("fetch sandbox failed: {e}")))?
         .ok_or_else(|| Status::not_found("sandbox not found"))?;
@@ -3742,6 +3886,7 @@ struct AtomicPolicyWriteContext<'a> {
 async fn apply_merge_operations_with_retry(
     store: &Store,
     sandbox_id: &str,
+    workspace: &str,
     baseline_policy: Option<&ProtoSandboxPolicy>,
     operations: &[PolicyMergeOp],
     atomic_context: Option<&AtomicPolicyWriteContext<'_>>,
@@ -3783,35 +3928,21 @@ async fn apply_merge_operations_with_retry(
         let next_version = latest.as_ref().map_or(1, |record| record.version + 1);
         let policy_id = uuid::Uuid::new_v4().to_string();
 
-        let write_result = if let Some(context) = atomic_context {
-            store
-                .put_policy_revision_atomic(&AtomicPolicyRevisionWrite {
-                    id: policy_id,
-                    sandbox_id: sandbox_id.to_string(),
-                    version: next_version,
-                    policy_payload: payload,
-                    policy_hash: hash.clone(),
-                    provenance: context.provenance.clone(),
-                    expected_resource_version: context.expected_resource_version,
-                    annotations: context.annotations.clone(),
-                    backfill_policy: None,
-                })
-                .await
-                .map(Some)
-        } else {
-            store
-                .put_policy_revision(&policy_id, sandbox_id, next_version, &payload, &hash)
-                .await
-                .map(|()| None)
-        };
-
-        match write_result {
-            Ok(updated_sandbox) => {
-                if atomic_context.is_none() {
-                    let _ = store
-                        .supersede_older_policies(sandbox_id, next_version)
-                        .await;
-                }
+        match store
+            .put_policy_revision(
+                &policy_id,
+                sandbox_id,
+                workspace,
+                next_version,
+                &payload,
+                &hash,
+            )
+            .await
+        {
+            Ok(()) => {
+                let _ = store
+                    .supersede_older_policies(sandbox_id, next_version)
+                    .await;
 
                 if attempt > 1 {
                     info!(
@@ -3852,6 +3983,7 @@ async fn apply_merge_operations_with_retry(
 pub(super) async fn merge_chunk_into_policy(
     store: &Store,
     sandbox_id: &str,
+    workspace: &str,
     chunk: &DraftChunkRecord,
 ) -> Result<(i64, String), Status> {
     let rule = NetworkPolicyRule::decode(chunk.proposed_rule.as_slice())
@@ -3861,19 +3993,19 @@ pub(super) async fn merge_chunk_into_policy(
         rule,
     }];
     validate_merge_operations_for_server(&operations)?;
-    apply_merge_operations_with_retry(store, sandbox_id, None, &operations, None)
-        .await
-        .map(|(version, hash, _)| (version, hash))
+    apply_merge_operations_with_retry(store, sandbox_id, workspace, None, &operations).await
 }
 
 async fn remove_chunk_from_policy(
     state: &ServerState,
     sandbox_id: &str,
+    workspace: &str,
     chunk: &DraftChunkRecord,
 ) -> Result<(i64, String), Status> {
     apply_merge_operations_with_retry(
         state.store.as_ref(),
         sandbox_id,
+        workspace,
         None,
         &[PolicyMergeOp::RemoveBinary {
             rule_name: chunk.rule_name.clone(),
@@ -3978,7 +4110,7 @@ fn upsert_setting_value(
 }
 
 pub(super) async fn load_global_settings(store: &Store) -> Result<StoredSettings, Status> {
-    load_settings_record(store, GLOBAL_SETTINGS_OBJECT_TYPE, GLOBAL_SETTINGS_NAME).await
+    load_settings_record(store, GLOBAL_SETTINGS_OBJECT_TYPE, "", GLOBAL_SETTINGS_NAME).await
 }
 
 pub(super) async fn save_global_settings(
@@ -3988,6 +4120,7 @@ pub(super) async fn save_global_settings(
     save_settings_record(
         store,
         GLOBAL_SETTINGS_OBJECT_TYPE,
+        "",
         GLOBAL_SETTINGS_NAME,
         settings,
     )
@@ -3996,32 +4129,41 @@ pub(super) async fn save_global_settings(
 
 pub(super) async fn load_sandbox_settings(
     store: &Store,
+    workspace: &str,
     sandbox_name: &str,
 ) -> Result<StoredSettings, Status> {
-    load_settings_record(store, SANDBOX_SETTINGS_OBJECT_TYPE, sandbox_name).await
+    load_settings_record(store, SANDBOX_SETTINGS_OBJECT_TYPE, workspace, sandbox_name).await
 }
 
 pub(super) async fn save_sandbox_settings(
     store: &Store,
+    workspace: &str,
     sandbox_name: &str,
     settings: &StoredSettings,
 ) -> Result<(), Status> {
-    save_settings_record(store, SANDBOX_SETTINGS_OBJECT_TYPE, sandbox_name, settings).await
+    save_settings_record(
+        store,
+        SANDBOX_SETTINGS_OBJECT_TYPE,
+        workspace,
+        sandbox_name,
+        settings,
+    )
+    .await
 }
 
 async fn load_settings_record(
     store: &Store,
     object_type: &str,
+    workspace: &str,
     name: &str,
 ) -> Result<StoredSettings, Status> {
     let record = store
-        .get_by_name(object_type, name)
+        .get_by_name(object_type, workspace, name)
         .await
         .map_err(|e| Status::internal(format!("fetch settings failed: {e}")))?;
     if let Some(record) = record {
         let mut settings = serde_json::from_slice::<StoredSettings>(&record.payload)
             .map_err(|e| Status::internal(format!("decode settings payload failed: {e}")))?;
-        // Populate resource_version from database record for CAS
         settings.resource_version = record.resource_version;
         Ok(settings)
     } else {
@@ -4032,6 +4174,7 @@ async fn load_settings_record(
 async fn save_settings_record(
     store: &Store,
     object_type: &str,
+    workspace: &str,
     name: &str,
     settings: &StoredSettings,
 ) -> Result<(), Status> {
@@ -4041,13 +4184,10 @@ async fn save_settings_record(
         .map_err(|e| Status::internal(format!("encode settings payload failed: {e}")))?;
 
     let (id, condition) = if settings.resource_version == 0 {
-        // Create new settings (resource_version 0 means never persisted)
         (uuid::Uuid::new_v4().to_string(), WriteCondition::MustCreate)
     } else {
-        // Update existing with CAS on the version from when it was loaded
-        // Fetch the record to get the stable ID
         let existing = store
-            .get_by_name(object_type, name)
+            .get_by_name(object_type, workspace, name)
             .await
             .map_err(|e| Status::internal(format!("fetch settings for CAS failed: {e}")))?
             .ok_or_else(|| Status::not_found("settings disappeared since load"))?;
@@ -4058,9 +4198,8 @@ async fn save_settings_record(
         )
     };
 
-    // Single-attempt CAS write
     store
-        .put_if(object_type, &id, name, &payload, None, condition)
+        .put_if(object_type, &id, name, workspace, &payload, None, condition)
         .await
         .map_err(|e| match e {
             crate::persistence::PersistenceError::Conflict { .. } => {
@@ -4328,7 +4467,7 @@ mod tests {
                     created_at_ms: 1_000_000,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 spec: Some(SandboxSpec {
                     policy: None,
@@ -4362,7 +4501,7 @@ mod tests {
                 created_at_ms: 1_000_000,
                 labels: HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             spec: Some(SandboxSpec {
                 policy: None,
@@ -4395,7 +4534,7 @@ mod tests {
                     created_at_ms: 1_000_000,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 spec: Some(SandboxSpec {
                     policy: None,
@@ -4431,7 +4570,7 @@ mod tests {
                     created_at_ms: 1_000_000,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 spec: Some(SandboxSpec {
                     policy: None,
@@ -4446,6 +4585,7 @@ mod tests {
             Request::new(GetDraftPolicyRequest {
                 name: "sandbox-b".to_string(),
                 status_filter: String::new(),
+                workspace: "default".to_string(),
             }),
             "sb-a",
         );
@@ -4497,6 +4637,7 @@ mod tests {
             Request::new(GetDraftPolicyRequest {
                 name: "missing-sandbox".to_string(),
                 status_filter: String::new(),
+                workspace: "default".to_string(),
             }),
             "sb-a",
         );
@@ -4519,7 +4660,7 @@ mod tests {
                 created_at_ms: 1_000_000,
                 labels: HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             spec: Some(SandboxSpec {
                 policy: None,
@@ -4600,7 +4741,7 @@ mod tests {
                 created_at_ms: 1_000_000,
                 labels: std::collections::HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             spec: Some(SandboxSpec {
                 policy: None,
@@ -4627,13 +4768,14 @@ mod tests {
                 created_at_ms: 1_000_000,
                 labels: HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             r#type: provider_type.to_string(),
             credentials: std::iter::once(("GITHUB_TOKEN".to_string(), "ghp-test".to_string()))
                 .collect(),
             config: HashMap::new(),
             credential_expires_at_ms: HashMap::new(),
+            profile_workspace: "default".to_string(),
         }
     }
 
@@ -4671,7 +4813,7 @@ mod tests {
                 created_at_ms: 1_000_000,
                 labels: HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             spec: Some(SandboxSpec {
                 policy: Some(policy),
@@ -4917,9 +5059,10 @@ mod tests {
             .await
             .unwrap();
 
-        let layers = profile_provider_policy_layers(&store, &["custom-provider".to_string()])
-            .await
-            .unwrap();
+        let layers =
+            profile_provider_policy_layers(&store, "default", &["custom-provider".to_string()])
+                .await
+                .unwrap();
 
         assert!(layers.is_empty());
     }
@@ -4939,7 +5082,7 @@ mod tests {
                     created_at_ms: 1_000_000,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 profile: Some(openshell_core::proto::ProviderProfile {
                     id: "generic".to_string(),
@@ -4962,9 +5105,10 @@ mod tests {
             .await
             .unwrap();
 
-        let layers = profile_provider_policy_layers(&store, &["custom-provider".to_string()])
-            .await
-            .unwrap();
+        let layers =
+            profile_provider_policy_layers(&store, "default", &["custom-provider".to_string()])
+                .await
+                .unwrap();
 
         assert_eq!(layers.len(), 1);
         assert_eq!(layers[0].rule.endpoints[0].host, "backdoor.example");
@@ -4986,7 +5130,7 @@ mod tests {
                     created_at_ms: 1_000_000,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 profile: Some(openshell_core::proto::ProviderProfile {
                     id: "custom-api".to_string(),
@@ -5023,9 +5167,10 @@ mod tests {
             .await
             .unwrap();
 
-        let layers = profile_provider_policy_layers(&store, &["work-custom".to_string()])
-            .await
-            .unwrap();
+        let layers =
+            profile_provider_policy_layers(&store, "default", &["work-custom".to_string()])
+                .await
+                .unwrap();
 
         assert_eq!(layers.len(), 1);
         assert_eq!(layers[0].rule_name, "_provider_work_custom");
@@ -5053,7 +5198,7 @@ mod tests {
                     created_at_ms: 1_000_000,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 profile: Some(openshell_core::proto::ProviderProfile {
                     id: "custom-api".to_string(),
@@ -5076,9 +5221,10 @@ mod tests {
             .await
             .unwrap();
 
-        let layers = profile_provider_policy_layers(&store, &["work-custom".to_string()])
-            .await
-            .unwrap();
+        let layers =
+            profile_provider_policy_layers(&store, "default", &["work-custom".to_string()])
+                .await
+                .unwrap();
 
         assert_eq!(layers.len(), 1);
         assert_eq!(layers[0].rule.endpoints[0].host, "api.custom.example");
@@ -5092,9 +5238,10 @@ mod tests {
             .await
             .unwrap();
 
-        let layers = profile_provider_policy_layers(&store, &["work-github".to_string()])
-            .await
-            .unwrap();
+        let layers =
+            profile_provider_policy_layers(&store, "default", &["work-github".to_string()])
+                .await
+                .unwrap();
 
         assert_eq!(layers.len(), 1);
         assert_eq!(layers[0].rule_name, "_provider_work_github");
@@ -5321,7 +5468,7 @@ mod tests {
                     created_at_ms: 1_000_000,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 profile: Some(ProviderProfile {
                     id: "custom-policy".to_string(),
@@ -5374,7 +5521,7 @@ mod tests {
         let mut updated_profile = stored_profile("api.after.example").profile.unwrap();
         updated_profile.resource_version = state
             .store
-            .get_message_by_name::<StoredProviderProfile>("custom-policy")
+            .get_message_by_name::<StoredProviderProfile>("default", "custom-policy")
             .await
             .unwrap()
             .unwrap()
@@ -5391,6 +5538,7 @@ mod tests {
                 }),
                 expected_resource_version: 0,
                 id: "custom-policy".to_string(),
+                workspace: "default".to_string(),
             })),
         )
         .await
@@ -5415,7 +5563,7 @@ mod tests {
 
         let persisted_provider: Provider = state
             .store
-            .get_message_by_name("work-custom")
+            .get_message_by_name::<Provider>("default", "work-custom")
             .await
             .unwrap()
             .unwrap();
@@ -5607,7 +5755,7 @@ mod tests {
                     created_at_ms: 1_000_000,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 profile: Some(ProviderProfile {
                     id: "custom-token".to_string(),
@@ -5651,10 +5799,13 @@ mod tests {
             .await
             .unwrap();
 
-        let first =
-            compute_provider_env_revision(state.store.as_ref(), &["work-custom-token".to_string()])
-                .await
-                .unwrap();
+        let first = compute_provider_env_revision(
+            state.store.as_ref(),
+            "default",
+            &["work-custom-token".to_string()],
+        )
+        .await
+        .unwrap();
 
         tokio::time::sleep(Duration::from_millis(2)).await;
         let mut rotated_profile = token_grant_profile("https://auth.example.com/rotated-token")
@@ -5662,7 +5813,7 @@ mod tests {
             .unwrap();
         rotated_profile.resource_version = state
             .store
-            .get_message_by_name::<StoredProviderProfile>("custom-token")
+            .get_message_by_name::<StoredProviderProfile>("default", "custom-token")
             .await
             .unwrap()
             .unwrap()
@@ -5679,15 +5830,19 @@ mod tests {
                 }),
                 expected_resource_version: 0,
                 id: "custom-token".to_string(),
+                workspace: "default".to_string(),
             })),
         )
         .await
         .unwrap();
 
-        let second =
-            compute_provider_env_revision(state.store.as_ref(), &["work-custom-token".to_string()])
-                .await
-                .unwrap();
+        let second = compute_provider_env_revision(
+            state.store.as_ref(),
+            "default",
+            &["work-custom-token".to_string()],
+        )
+        .await
+        .unwrap();
 
         assert_ne!(
             first, second,
@@ -5745,6 +5900,7 @@ mod tests {
                 sandbox_name: "attach-lifecycle".to_string(),
                 provider_name: "work-github".to_string(),
                 expected_resource_version: 0,
+                workspace: "default".to_string(),
             })),
         )
         .await
@@ -5781,6 +5937,7 @@ mod tests {
                 sandbox_name: "attach-lifecycle".to_string(),
                 provider_name: "work-github".to_string(),
                 expected_resource_version: 0,
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -5866,6 +6023,7 @@ mod tests {
                         discovery: None,
                     }),
                 }],
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -5908,6 +6066,7 @@ mod tests {
                 sandbox_name: "custom-attach-lifecycle".to_string(),
                 provider_name: "work-custom".to_string(),
                 expected_resource_version: 0,
+                workspace: "default".to_string(),
             })),
         )
         .await
@@ -5947,6 +6106,7 @@ mod tests {
                 sandbox_name: "custom-attach-lifecycle".to_string(),
                 provider_name: "work-custom".to_string(),
                 expected_resource_version: 0,
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -6011,7 +6171,7 @@ mod tests {
                 created_at_ms: 1_000_000,
                 labels: HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             spec: Some(SandboxSpec {
                 policy: Some(sandbox_policy),
@@ -6101,7 +6261,7 @@ mod tests {
                 created_at_ms: 1_000_000,
                 labels: std::collections::HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             spec: Some(SandboxSpec {
                 policy: None,
@@ -6154,7 +6314,7 @@ mod tests {
     /// settings model, mirroring what `openshell settings set <name>
     /// proposal_approval_mode <mode>` would do at runtime.
     async fn seed_sandbox_approval_mode(state: &Arc<ServerState>, sandbox_name: &str, mode: &str) {
-        let mut settings = load_sandbox_settings(state.store.as_ref(), sandbox_name)
+        let mut settings = load_sandbox_settings(state.store.as_ref(), "default", sandbox_name)
             .await
             .unwrap();
         settings.settings.insert(
@@ -6162,7 +6322,7 @@ mod tests {
             StoredSettingValue::String(mode.to_string()),
         );
         settings.revision = settings.revision.wrapping_add(1);
-        save_sandbox_settings(state.store.as_ref(), sandbox_name, &settings)
+        save_sandbox_settings(state.store.as_ref(), "default", sandbox_name, &settings)
             .await
             .unwrap();
     }
@@ -6206,7 +6366,7 @@ mod tests {
                 created_at_ms: 1_000_000,
                 labels: std::collections::HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             spec: Some(SandboxSpec {
                 policy: None,
@@ -6263,6 +6423,7 @@ mod tests {
             with_user(Request::new(GetDraftPolicyRequest {
                 name: sandbox_name.clone(),
                 status_filter: String::new(),
+                workspace: "default".to_string(),
             })),
         )
         .await
@@ -6281,6 +6442,7 @@ mod tests {
             Request::new(ApproveDraftChunkRequest {
                 name: sandbox_name.clone(),
                 chunk_id: chunk_id.clone(),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -6293,6 +6455,7 @@ mod tests {
             &state,
             Request::new(GetDraftHistoryRequest {
                 name: sandbox_name.clone(),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -6310,6 +6473,7 @@ mod tests {
                 limit: 10,
                 offset: 0,
                 global: false,
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -6323,6 +6487,7 @@ mod tests {
             Request::new(UndoDraftChunkRequest {
                 name: sandbox_name.clone(),
                 chunk_id: chunk_id.clone(),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -6336,6 +6501,7 @@ mod tests {
             with_user(Request::new(GetDraftPolicyRequest {
                 name: sandbox_name.clone(),
                 status_filter: String::new(),
+                workspace: "default".to_string(),
             })),
         )
         .await
@@ -6348,6 +6514,7 @@ mod tests {
             &state,
             Request::new(GetDraftHistoryRequest {
                 name: sandbox_name.clone(),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -6363,6 +6530,7 @@ mod tests {
                 limit: 10,
                 offset: 0,
                 global: false,
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -6376,6 +6544,7 @@ mod tests {
             &state,
             Request::new(ClearDraftChunksRequest {
                 name: sandbox_name.clone(),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -6388,6 +6557,7 @@ mod tests {
             with_user(Request::new(GetDraftPolicyRequest {
                 name: sandbox_name.clone(),
                 status_filter: String::new(),
+                workspace: "default".to_string(),
             })),
         )
         .await
@@ -6397,7 +6567,10 @@ mod tests {
 
         let history_after_clear = handle_get_draft_history(
             &state,
-            Request::new(GetDraftHistoryRequest { name: sandbox_name }),
+            Request::new(GetDraftHistoryRequest {
+                name: sandbox_name,
+                workspace: "default".to_string(),
+            }),
         )
         .await
         .unwrap()
@@ -6422,7 +6595,7 @@ mod tests {
                 created_at_ms: 1_000_000,
                 labels: std::collections::HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             spec: Some(SandboxSpec {
                 policy: None,
@@ -6471,6 +6644,7 @@ mod tests {
                 name: sandbox_name.clone(),
                 chunk_id: chunk_id.clone(),
                 reason: guidance.to_string(),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -6481,6 +6655,7 @@ mod tests {
             with_user(Request::new(GetDraftPolicyRequest {
                 name: sandbox_name,
                 status_filter: String::new(),
+                workspace: "default".to_string(),
             })),
         )
         .await
@@ -6519,7 +6694,7 @@ mod tests {
                 created_at_ms: 1_000_000,
                 labels: std::collections::HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             spec: Some(SandboxSpec {
                 policy: Some(SandboxPolicy {
@@ -6585,6 +6760,7 @@ mod tests {
             with_user(Request::new(GetDraftPolicyRequest {
                 name: sandbox_name,
                 status_filter: String::new(),
+                workspace: "default".to_string(),
             })),
         )
         .await
@@ -6635,7 +6811,7 @@ mod tests {
                 created_at_ms: 1_000_000,
                 labels: std::collections::HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             spec: Some(SandboxSpec {
                 policy: Some(SandboxPolicy {
@@ -6694,6 +6870,7 @@ mod tests {
             with_user(Request::new(GetDraftPolicyRequest {
                 name: sandbox_name.clone(),
                 status_filter: String::new(),
+                workspace: "default".to_string(),
             })),
         )
         .await
@@ -6769,6 +6946,7 @@ mod tests {
             with_user(Request::new(GetDraftPolicyRequest {
                 name: sandbox_name,
                 status_filter: String::new(),
+                workspace: "default".to_string(),
             })),
         )
         .await
@@ -6839,7 +7017,7 @@ mod tests {
                 created_at_ms: 1_000_000,
                 labels: std::collections::HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             spec: Some(SandboxSpec {
                 policy: Some(SandboxPolicy {
@@ -6896,6 +7074,7 @@ mod tests {
             with_user(Request::new(GetDraftPolicyRequest {
                 name: sandbox_name,
                 status_filter: String::new(),
+                workspace: "default".to_string(),
             })),
         )
         .await
@@ -6937,7 +7116,7 @@ mod tests {
                 created_at_ms: 1_000_000,
                 labels: std::collections::HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             spec: Some(SandboxSpec {
                 policy: Some(SandboxPolicy {
@@ -6997,6 +7176,7 @@ mod tests {
             with_user(Request::new(GetDraftPolicyRequest {
                 name: sandbox_name,
                 status_filter: String::new(),
+                workspace: "default".to_string(),
             })),
         )
         .await
@@ -7043,7 +7223,7 @@ mod tests {
                 created_at_ms: 1_000_000,
                 labels: std::collections::HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             spec: Some(SandboxSpec {
                 policy: Some(SandboxPolicy {
@@ -7098,6 +7278,7 @@ mod tests {
             with_user(Request::new(GetDraftPolicyRequest {
                 name: sandbox_name,
                 status_filter: String::new(),
+                workspace: "default".to_string(),
             })),
         )
         .await
@@ -7137,7 +7318,7 @@ mod tests {
                 created_at_ms: 1_000_000,
                 labels: std::collections::HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             spec: Some(SandboxSpec {
                 policy: Some(SandboxPolicy {
@@ -7192,6 +7373,7 @@ mod tests {
             with_user(Request::new(GetDraftPolicyRequest {
                 name: sandbox_name,
                 status_filter: String::new(),
+                workspace: "default".to_string(),
             })),
         )
         .await
@@ -7223,7 +7405,7 @@ mod tests {
                 created_at_ms: 1_000_000,
                 labels: std::collections::HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             spec: Some(SandboxSpec {
                 policy: Some(SandboxPolicy {
@@ -7277,6 +7459,7 @@ mod tests {
             with_user(Request::new(GetDraftPolicyRequest {
                 name: sandbox_name,
                 status_filter: String::new(),
+                workspace: "default".to_string(),
             })),
         )
         .await
@@ -7311,7 +7494,7 @@ mod tests {
                 created_at_ms: 1_000_000,
                 labels: std::collections::HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             spec: Some(SandboxSpec {
                 policy: Some(SandboxPolicy {
@@ -7366,6 +7549,7 @@ mod tests {
             with_user(Request::new(GetDraftPolicyRequest {
                 name: sandbox_name,
                 status_filter: String::new(),
+                workspace: "default".to_string(),
             })),
         )
         .await
@@ -7399,7 +7583,7 @@ mod tests {
                 created_at_ms: 1_000_000,
                 labels: std::collections::HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             spec: Some(SandboxSpec {
                 policy: Some(SandboxPolicy {
@@ -7458,6 +7642,7 @@ mod tests {
             with_user(Request::new(GetDraftPolicyRequest {
                 name: sandbox_name,
                 status_filter: String::new(),
+                workspace: "default".to_string(),
             })),
         )
         .await
@@ -7492,7 +7677,7 @@ mod tests {
                 created_at_ms: 1_000_000,
                 labels: std::collections::HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             spec: Some(SandboxSpec {
                 policy: Some(SandboxPolicy {
@@ -7606,7 +7791,7 @@ mod tests {
         };
         state
             .store
-            .put_draft_chunk(&chunk, None)
+            .put_draft_chunk(&chunk, None, "default")
             .await
             .expect("draft chunk should persist");
 
@@ -7615,6 +7800,7 @@ mod tests {
             with_user(Request::new(ApproveDraftChunkRequest {
                 name: sandbox_name.to_string(),
                 chunk_id: chunk.id.clone(),
+                workspace: "default".to_string(),
             })),
         )
         .await
@@ -7667,7 +7853,7 @@ mod tests {
                 created_at_ms: 1_000_000,
                 labels: std::collections::HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             spec: Some(SandboxSpec {
                 policy: Some(SandboxPolicy {
@@ -7721,6 +7907,7 @@ mod tests {
             with_user(Request::new(GetDraftPolicyRequest {
                 name: sandbox_name,
                 status_filter: String::new(),
+                workspace: "default".to_string(),
             })),
         )
         .await
@@ -7764,7 +7951,7 @@ mod tests {
                 created_at_ms: 1_000_000,
                 labels: std::collections::HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             spec: Some(SandboxSpec {
                 policy: Some(SandboxPolicy {
@@ -7818,6 +8005,7 @@ mod tests {
             with_user(Request::new(GetDraftPolicyRequest {
                 name: sandbox_name,
                 status_filter: String::new(),
+                workspace: "default".to_string(),
             })),
         )
         .await
@@ -7850,7 +8038,7 @@ mod tests {
                 created_at_ms: 1_000_000,
                 labels: std::collections::HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             spec: Some(SandboxSpec {
                 policy: Some(SandboxPolicy {
@@ -7904,6 +8092,7 @@ mod tests {
             with_user(Request::new(GetDraftPolicyRequest {
                 name: sandbox_name,
                 status_filter: String::new(),
+                workspace: "default".to_string(),
             })),
         )
         .await
@@ -7945,7 +8134,7 @@ mod tests {
                     created_at_ms: 1_000_000,
                     labels: HashMap::new(),
                     resource_version: 0,
-                    annotations: HashMap::new(),
+                    workspace: "default".to_string(),
                 }),
                 profile: Some(ProviderProfile {
                     id: "custom-api".to_string(),
@@ -7985,7 +8174,7 @@ mod tests {
                 created_at_ms: 1_000_000,
                 labels: HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             spec: Some(SandboxSpec {
                 policy: Some(SandboxPolicy {
@@ -8048,6 +8237,7 @@ mod tests {
             with_user(Request::new(GetDraftPolicyRequest {
                 name: sandbox_name,
                 status_filter: String::new(),
+                workspace: "default".to_string(),
             })),
         )
         .await
@@ -8108,7 +8298,7 @@ mod tests {
                 created_at_ms: 1_000_000,
                 labels: std::collections::HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             spec: Some(SandboxSpec {
                 policy: Some(SandboxPolicy {
@@ -8216,6 +8406,7 @@ mod tests {
             with_user(Request::new(GetDraftPolicyRequest {
                 name: sandbox_name,
                 status_filter: String::new(),
+                workspace: "default".to_string(),
             })),
         )
         .await
@@ -8295,7 +8486,7 @@ mod tests {
                 created_at_ms: 1_000_000,
                 labels: std::collections::HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             spec: Some(SandboxSpec {
                 policy: None,
@@ -8364,6 +8555,7 @@ mod tests {
             with_user(Request::new(GetDraftPolicyRequest {
                 name: sandbox_name.clone(),
                 status_filter: String::new(),
+                workspace: "default".to_string(),
             })),
         )
         .await
@@ -8385,6 +8577,7 @@ mod tests {
                 name: sandbox_name,
                 chunk_id: second.accepted_chunk_ids[0].clone(),
                 reason: "redraft test".to_string(),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -8410,7 +8603,7 @@ mod tests {
                 created_at_ms: 1_000_000,
                 labels: std::collections::HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             spec: Some(SandboxSpec {
                 policy: None,
@@ -8466,6 +8659,7 @@ mod tests {
             with_user(Request::new(GetDraftPolicyRequest {
                 name: sandbox_name,
                 status_filter: String::new(),
+                workspace: "default".to_string(),
             })),
         )
         .await
@@ -8775,7 +8969,7 @@ mod tests {
                 created_at_ms: 1_000_000,
                 labels: std::collections::HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             spec: Some(SandboxSpec {
                 policy: None,
@@ -8822,6 +9016,7 @@ mod tests {
                 name: sandbox_name.clone(),
                 chunk_id: chunk_id.clone(),
                 reason: "scope too broad".to_string(),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -8832,6 +9027,7 @@ mod tests {
             Request::new(ApproveDraftChunkRequest {
                 name: sandbox_name.clone(),
                 chunk_id: chunk_id.clone(),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -8842,6 +9038,7 @@ mod tests {
             Request::new(UndoDraftChunkRequest {
                 name: sandbox_name.clone(),
                 chunk_id: chunk_id.clone(),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -8852,6 +9049,7 @@ mod tests {
             with_user(Request::new(GetDraftPolicyRequest {
                 name: sandbox_name,
                 status_filter: String::new(),
+                workspace: "default".to_string(),
             })),
         )
         .await
@@ -8890,7 +9088,7 @@ mod tests {
                 created_at_ms: 1_000_000,
                 labels: std::collections::HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             spec: Some(SandboxSpec {
                 policy: None,
@@ -8907,7 +9105,7 @@ mod tests {
                 created_at_ms: 1_000_001,
                 labels: std::collections::HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             spec: Some(SandboxSpec {
                 policy: None,
@@ -8958,6 +9156,7 @@ mod tests {
             with_user(Request::new(GetDraftPolicyRequest {
                 name: sandbox_a.object_name().to_string(),
                 status_filter: String::new(),
+                workspace: "default".to_string(),
             })),
         )
         .await
@@ -8971,6 +9170,7 @@ mod tests {
             Request::new(ApproveDraftChunkRequest {
                 name: other_name.clone(),
                 chunk_id: chunk_id.clone(),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -8983,6 +9183,7 @@ mod tests {
                 name: other_name.clone(),
                 chunk_id: chunk_id.clone(),
                 reason: "wrong sandbox".to_string(),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -8995,6 +9196,7 @@ mod tests {
                 name: other_name.clone(),
                 chunk_id: chunk_id.clone(),
                 proposed_rule: Some(proposed_rule.clone()),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -9006,6 +9208,7 @@ mod tests {
             Request::new(ApproveDraftChunkRequest {
                 name: sandbox_a.object_name().to_string(),
                 chunk_id: chunk_id.clone(),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -9016,6 +9219,7 @@ mod tests {
             Request::new(UndoDraftChunkRequest {
                 name: other_name,
                 chunk_id,
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -9234,7 +9438,7 @@ mod tests {
             rejection_reason: String::new(),
         };
 
-        let (version, _) = merge_chunk_into_policy(&store, &chunk.sandbox_id, &chunk)
+        let (version, _) = merge_chunk_into_policy(&store, &chunk.sandbox_id, "default", &chunk)
             .await
             .unwrap();
 
@@ -9288,6 +9492,7 @@ mod tests {
             .put_policy_revision(
                 "p-seed",
                 sandbox_id,
+                "default",
                 1,
                 &initial_policy.encode_to_vec(),
                 "seed-hash",
@@ -9330,7 +9535,7 @@ mod tests {
             rejection_reason: String::new(),
         };
 
-        let (version, _) = merge_chunk_into_policy(&store, sandbox_id, &chunk)
+        let (version, _) = merge_chunk_into_policy(&store, sandbox_id, "default", &chunk)
             .await
             .unwrap();
         assert_eq!(version, 2);
@@ -9389,6 +9594,7 @@ mod tests {
             .put_policy_revision(
                 "p-seed",
                 sandbox_id,
+                "default",
                 1,
                 &initial_policy.encode_to_vec(),
                 "seed-hash",
@@ -9431,7 +9637,7 @@ mod tests {
             rejection_reason: String::new(),
         };
 
-        let (version, _) = merge_chunk_into_policy(&store, sandbox_id, &chunk)
+        let (version, _) = merge_chunk_into_policy(&store, sandbox_id, "default", &chunk)
             .await
             .unwrap();
         assert_eq!(version, 2);
@@ -9476,6 +9682,7 @@ mod tests {
             .put_policy_revision(
                 "p-seed",
                 sandbox_id,
+                "default",
                 1,
                 &initial_policy.encode_to_vec(),
                 "seed-hash",
@@ -9511,8 +9718,8 @@ mod tests {
         }];
 
         let (left, right) = tokio::join!(
-            apply_merge_operations_with_retry(&store, sandbox_id, None, &add_allow, None),
-            apply_merge_operations_with_retry(&store, sandbox_id, None, &add_deny, None),
+            apply_merge_operations_with_retry(&store, sandbox_id, "default", None, &add_allow),
+            apply_merge_operations_with_retry(&store, sandbox_id, "default", None, &add_deny),
         );
 
         let mut versions = vec![left.unwrap().0, right.unwrap().0];
@@ -10182,7 +10389,9 @@ mod tests {
     #[tokio::test]
     async fn sandbox_settings_load_returns_default_when_empty() {
         let store = test_store().await;
-        let settings = load_sandbox_settings(&store, "nonexistent").await.unwrap();
+        let settings = load_sandbox_settings(&store, "default", "nonexistent")
+            .await
+            .unwrap();
         assert!(settings.settings.is_empty());
         assert_eq!(settings.revision, 0);
     }
@@ -10226,11 +10435,13 @@ mod tests {
             StoredSettingValue::String("auto".to_string()),
         );
         settings.revision = 3;
-        save_sandbox_settings(&store, sandbox_name, &settings)
+        save_sandbox_settings(&store, "default", sandbox_name, &settings)
             .await
             .unwrap();
 
-        let loaded = load_sandbox_settings(&store, sandbox_name).await.unwrap();
+        let loaded = load_sandbox_settings(&store, "default", sandbox_name)
+            .await
+            .unwrap();
         assert_eq!(loaded.revision, 3);
         assert_eq!(
             loaded.settings.get(settings::PROPOSAL_APPROVAL_MODE_KEY),
@@ -10395,7 +10606,9 @@ mod tests {
         assert!(!loaded.settings.contains_key("log_level"));
 
         let sandbox_name = "test-sandbox";
-        let mut sandbox_settings = load_sandbox_settings(&store, sandbox_name).await.unwrap();
+        let mut sandbox_settings = load_sandbox_settings(&store, "default", sandbox_name)
+            .await
+            .unwrap();
         let changed = upsert_setting_value(
             &mut sandbox_settings.settings,
             "log_level",
@@ -10403,15 +10616,113 @@ mod tests {
         );
         assert!(changed);
         sandbox_settings.revision = sandbox_settings.revision.wrapping_add(1);
-        save_sandbox_settings(&store, sandbox_name, &sandbox_settings)
+        save_sandbox_settings(&store, "default", sandbox_name, &sandbox_settings)
             .await
             .unwrap();
 
-        let reloaded = load_sandbox_settings(&store, sandbox_name).await.unwrap();
+        let reloaded = load_sandbox_settings(&store, "default", sandbox_name)
+            .await
+            .unwrap();
         assert_eq!(
             reloaded.settings.get("log_level"),
             Some(&StoredSettingValue::String("debug".to_string())),
         );
+    }
+
+    #[tokio::test]
+    async fn sandbox_settings_are_workspace_isolated() {
+        let store = test_store().await;
+        let sandbox_name = "work";
+
+        let mut alpha_settings = StoredSettings::default();
+        alpha_settings.settings.insert(
+            settings::PROPOSAL_APPROVAL_MODE_KEY.to_string(),
+            StoredSettingValue::String("auto".to_string()),
+        );
+        alpha_settings.revision = 1;
+        save_sandbox_settings(&store, "alpha", sandbox_name, &alpha_settings)
+            .await
+            .unwrap();
+
+        let mut beta_settings = StoredSettings::default();
+        beta_settings.settings.insert(
+            settings::PROPOSAL_APPROVAL_MODE_KEY.to_string(),
+            StoredSettingValue::String("manual".to_string()),
+        );
+        beta_settings.revision = 1;
+        save_sandbox_settings(&store, "beta", sandbox_name, &beta_settings)
+            .await
+            .unwrap();
+
+        let alpha_loaded = load_sandbox_settings(&store, "alpha", sandbox_name)
+            .await
+            .unwrap();
+        let beta_loaded = load_sandbox_settings(&store, "beta", sandbox_name)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            alpha_loaded
+                .settings
+                .get(settings::PROPOSAL_APPROVAL_MODE_KEY),
+            Some(&StoredSettingValue::String("auto".to_string())),
+        );
+        assert_eq!(
+            beta_loaded
+                .settings
+                .get(settings::PROPOSAL_APPROVAL_MODE_KEY),
+            Some(&StoredSettingValue::String("manual".to_string())),
+        );
+    }
+
+    #[tokio::test]
+    async fn get_sandbox_config_returns_workspace() {
+        use openshell_core::proto::{SandboxPhase, SandboxSpec};
+        let state = test_server_state().await;
+
+        for (ws, sb_id, sb_name) in [("alpha", "sb-alpha", "work"), ("beta", "sb-beta", "work")] {
+            let mut sandbox = Sandbox {
+                metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
+                    id: sb_id.to_string(),
+                    name: sb_name.to_string(),
+                    created_at_ms: 1_000_000,
+                    labels: HashMap::new(),
+                    resource_version: 0,
+                    workspace: ws.to_string(),
+                }),
+                spec: Some(SandboxSpec {
+                    policy: None,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            sandbox.set_phase(SandboxPhase::Provisioning as i32);
+            state.store.put_message(&sandbox).await.unwrap();
+        }
+
+        let alpha_req = with_sandbox(
+            Request::new(GetSandboxConfigRequest {
+                sandbox_id: "sb-alpha".to_string(),
+            }),
+            "sb-alpha",
+        );
+        let alpha_resp = handle_get_sandbox_config(&state, alpha_req)
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(alpha_resp.workspace, "alpha");
+
+        let beta_req = with_sandbox(
+            Request::new(GetSandboxConfigRequest {
+                sandbox_id: "sb-beta".to_string(),
+            }),
+            "sb-beta",
+        );
+        let beta_resp = handle_get_sandbox_config(&state, beta_req)
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(beta_resp.workspace, "beta");
     }
 
     #[test]
@@ -10517,7 +10828,7 @@ mod tests {
                 created_at_ms: 1_000_000,
                 labels: HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             spec: Some(SandboxSpec {
                 policy: None, // No policy yet - will be backfilled
@@ -10532,7 +10843,7 @@ mod tests {
         // Fetch the sandbox to get its current resource_version
         let current = state
             .store
-            .get_message_by_name::<Sandbox>("test-sandbox")
+            .get_message_by_name::<Sandbox>("default", "test-sandbox")
             .await
             .unwrap()
             .unwrap();
@@ -10552,7 +10863,7 @@ mod tests {
                 global: false,
                 merge_operations: vec![],
                 expected_resource_version: current_version,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -10565,7 +10876,7 @@ mod tests {
         // Verify the resource_version incremented and policy was backfilled
         let updated_sandbox = state
             .store
-            .get_message_by_name::<Sandbox>("test-sandbox")
+            .get_message_by_name::<Sandbox>("default", "test-sandbox")
             .await
             .unwrap()
             .unwrap();
@@ -11180,7 +11491,7 @@ mod tests {
                 created_at_ms: 1_000_000,
                 labels: HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             spec: Some(SandboxSpec {
                 policy: None,
@@ -11194,7 +11505,7 @@ mod tests {
 
         let current = state
             .store
-            .get_message_by_name::<Sandbox>("sync-strip")
+            .get_message_by_name::<Sandbox>("default", "sync-strip")
             .await
             .unwrap()
             .unwrap();
@@ -11234,7 +11545,7 @@ mod tests {
 
         let updated_sandbox = state
             .store
-            .get_message_by_name::<Sandbox>("sync-strip")
+            .get_message_by_name::<Sandbox>("default", "sync-strip")
             .await
             .unwrap()
             .unwrap();
@@ -11284,7 +11595,7 @@ mod tests {
                 created_at_ms: 1_000_000,
                 labels: HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             spec: Some(SandboxSpec {
                 policy: None,
@@ -11299,7 +11610,7 @@ mod tests {
         // Get current version
         let current = state
             .store
-            .get_message_by_name::<Sandbox>("test-sandbox")
+            .get_message_by_name::<Sandbox>("default", "test-sandbox")
             .await
             .unwrap()
             .unwrap();
@@ -11319,7 +11630,7 @@ mod tests {
                 global: false,
                 merge_operations: vec![],
                 expected_resource_version: 99, // stale version
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
         )
         .await
@@ -11337,7 +11648,7 @@ mod tests {
         // Verify the sandbox was not modified (policy still None)
         let unchanged = state
             .store
-            .get_message_by_name::<Sandbox>("test-sandbox")
+            .get_message_by_name::<Sandbox>("default", "test-sandbox")
             .await
             .unwrap()
             .unwrap();
@@ -11376,7 +11687,7 @@ mod tests {
                 created_at_ms: 1_000_000,
                 labels: HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             spec: Some(SandboxSpec {
                 policy: None,
@@ -11391,7 +11702,7 @@ mod tests {
         // All three clients fetch the sandbox and see the same version
         let initial = state
             .store
-            .get_message_by_name::<Sandbox>("test-sandbox")
+            .get_message_by_name::<Sandbox>("default", "test-sandbox")
             .await
             .unwrap()
             .unwrap();
@@ -11415,7 +11726,7 @@ mod tests {
                         global: false,
                         merge_operations: vec![],
                         expected_resource_version: initial_version,
-                        annotations: HashMap::new(),
+                        workspace: "default".to_string(),
                     }),
                 )
                 .await
@@ -11448,7 +11759,7 @@ mod tests {
         // Final sandbox should have resource_version = initial_version + 1 and policy backfilled
         let final_sandbox = state
             .store
-            .get_message_by_name::<Sandbox>("test-sandbox")
+            .get_message_by_name::<Sandbox>("default", "test-sandbox")
             .await
             .unwrap()
             .unwrap();

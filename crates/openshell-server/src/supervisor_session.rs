@@ -841,7 +841,7 @@ mod tests {
                 created_at_ms: 1_000_000,
                 labels: HashMap::new(),
                 resource_version: 0,
-                annotations: HashMap::new(),
+                workspace: "default".to_string(),
             }),
             ..Default::default()
         }
