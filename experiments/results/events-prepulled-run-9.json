@@ -1,0 +1,524 @@
+{
+    "apiVersion": "v1",
+    "items": [
+        {
+            "action": "Binding",
+            "apiVersion": "v1",
+            "eventTime": "2026-07-10T07:00:07.767109Z",
+            "firstTimestamp": null,
+            "involvedObject": {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "name": "cold-prepulled-run-9",
+                "namespace": "openshell",
+                "resourceVersion": "20199",
+                "uid": "1928f5bc-1c8d-432c-8206-e4a3f6324675"
+            },
+            "kind": "Event",
+            "lastTimestamp": null,
+            "message": "Successfully assigned openshell/cold-prepulled-run-9 to ip-10-0-5-254.us-east-2.compute.internal",
+            "metadata": {
+                "creationTimestamp": "2026-07-10T07:00:07Z",
+                "name": "cold-prepulled-run-9.18c0db82ea9d3086",
+                "namespace": "openshell",
+                "resourceVersion": "20230",
+                "uid": "4030bbf5-c88d-480a-a5fd-f0bd73f90848"
+            },
+            "reason": "Scheduled",
+            "reportingComponent": "default-scheduler",
+            "reportingInstance": "default-scheduler-kube-scheduler-5d4d5bf5b-96lll",
+            "source": {},
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-07-10T07:00:10Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "name": "cold-prepulled-run-9",
+                "namespace": "openshell",
+                "resourceVersion": "20229",
+                "uid": "1928f5bc-1c8d-432c-8206-e4a3f6324675"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-07-10T07:00:10Z",
+            "message": "AttachVolume.Attach succeeded for volume \"pvc-9cff8802-2a69-4307-8987-6b670376eee5\" ",
+            "metadata": {
+                "creationTimestamp": "2026-07-10T07:00:10Z",
+                "name": "cold-prepulled-run-9.18c0db83788d3189",
+                "namespace": "openshell",
+                "resourceVersion": "20242",
+                "uid": "372fcca3-e113-4d1f-b51d-a3532392f324"
+            },
+            "reason": "SuccessfulAttachVolume",
+            "reportingComponent": "attachdetach-controller",
+            "reportingInstance": "",
+            "source": {
+                "component": "attachdetach-controller"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-07-10T07:00:15Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "name": "cold-prepulled-run-9",
+                "namespace": "openshell",
+                "resourceVersion": "20233",
+                "uid": "1928f5bc-1c8d-432c-8206-e4a3f6324675"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-07-10T07:00:15Z",
+            "message": "Add eth0 [10.130.0.29/23] from ovn-kubernetes",
+            "metadata": {
+                "creationTimestamp": "2026-07-10T07:00:15Z",
+                "name": "cold-prepulled-run-9.18c0db84b216c711",
+                "namespace": "openshell",
+                "resourceVersion": "20270",
+                "uid": "520943ae-d7a4-4988-bad2-566713f688b0"
+            },
+            "reason": "AddedInterface",
+            "reportingComponent": "multus",
+            "reportingInstance": "",
+            "source": {
+                "component": "multus"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-07-10T07:00:58Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "fieldPath": "spec.initContainers{workspace-init}",
+                "kind": "Pod",
+                "name": "cold-prepulled-run-9",
+                "namespace": "openshell",
+                "resourceVersion": "20229",
+                "uid": "1928f5bc-1c8d-432c-8206-e4a3f6324675"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-07-10T07:00:58Z",
+            "message": "Pulling image \"ghcr.io/nvidia/openshell-community/sandboxes/base:latest\"",
+            "metadata": {
+                "creationTimestamp": "2026-07-10T07:00:58Z",
+                "name": "cold-prepulled-run-9.18c0db8eba75fc23",
+                "namespace": "openshell",
+                "resourceVersion": "20407",
+                "uid": "dd2defdf-f7d8-4ea0-9a51-62698695cdda"
+            },
+            "reason": "Pulling",
+            "reportingComponent": "kubelet",
+            "reportingInstance": "ip-10-0-5-254.us-east-2.compute.internal",
+            "source": {
+                "component": "kubelet",
+                "host": "ip-10-0-5-254.us-east-2.compute.internal"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-07-10T07:00:58Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "name": "cold-prepulled-run-9",
+                "namespace": "openshell",
+                "resourceVersion": "20229",
+                "uid": "1928f5bc-1c8d-432c-8206-e4a3f6324675"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-07-10T07:00:58Z",
+            "message": "Successfully pulled image \"ghcr.io/nvidia/openshell/supervisor:latest\" in 43.051s (43.051s including waiting). Image size: 16599000 bytes.",
+            "metadata": {
+                "creationTimestamp": "2026-07-10T07:00:58Z",
+                "name": "cold-prepulled-run-9.18c0db8eba6ea633",
+                "namespace": "openshell",
+                "resourceVersion": "20406",
+                "uid": "5515b7e5-f7a3-4fe9-a13a-3e399e4ca127"
+            },
+            "reason": "Pulled",
+            "reportingComponent": "kubelet",
+            "reportingInstance": "ip-10-0-5-254.us-east-2.compute.internal",
+            "source": {
+                "component": "kubelet",
+                "host": "ip-10-0-5-254.us-east-2.compute.internal"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-07-10T07:01:04Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "fieldPath": "spec.initContainers{workspace-init}",
+                "kind": "Pod",
+                "name": "cold-prepulled-run-9",
+                "namespace": "openshell",
+                "resourceVersion": "20229",
+                "uid": "1928f5bc-1c8d-432c-8206-e4a3f6324675"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-07-10T07:01:04Z",
+            "message": "Container started",
+            "metadata": {
+                "creationTimestamp": "2026-07-10T07:01:04Z",
+                "name": "cold-prepulled-run-9.18c0db900f34c88b",
+                "namespace": "openshell",
+                "resourceVersion": "20423",
+                "uid": "dd9905cc-4e2d-46fa-9f19-e9b4b9d9dcc8"
+            },
+            "reason": "Started",
+            "reportingComponent": "kubelet",
+            "reportingInstance": "ip-10-0-5-254.us-east-2.compute.internal",
+            "source": {
+                "component": "kubelet",
+                "host": "ip-10-0-5-254.us-east-2.compute.internal"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-07-10T07:01:04Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "fieldPath": "spec.initContainers{workspace-init}",
+                "kind": "Pod",
+                "name": "cold-prepulled-run-9",
+                "namespace": "openshell",
+                "resourceVersion": "20229",
+                "uid": "1928f5bc-1c8d-432c-8206-e4a3f6324675"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-07-10T07:01:04Z",
+            "message": "Successfully pulled image \"ghcr.io/nvidia/openshell-community/sandboxes/base:latest\" in 5.638s (5.638s including waiting). Image size: 3422808342 bytes.",
+            "metadata": {
+                "creationTimestamp": "2026-07-10T07:01:04Z",
+                "name": "cold-prepulled-run-9.18c0db900a86009a",
+                "namespace": "openshell",
+                "resourceVersion": "20421",
+                "uid": "9fbfe9b6-80c6-4d7c-a77d-c74225a39a32"
+            },
+            "reason": "Pulled",
+            "reportingComponent": "kubelet",
+            "reportingInstance": "ip-10-0-5-254.us-east-2.compute.internal",
+            "source": {
+                "component": "kubelet",
+                "host": "ip-10-0-5-254.us-east-2.compute.internal"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-07-10T07:01:04Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "fieldPath": "spec.initContainers{workspace-init}",
+                "kind": "Pod",
+                "name": "cold-prepulled-run-9",
+                "namespace": "openshell",
+                "resourceVersion": "20229",
+                "uid": "1928f5bc-1c8d-432c-8206-e4a3f6324675"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-07-10T07:01:04Z",
+            "message": "Container created",
+            "metadata": {
+                "creationTimestamp": "2026-07-10T07:01:04Z",
+                "name": "cold-prepulled-run-9.18c0db900ec74dbc",
+                "namespace": "openshell",
+                "resourceVersion": "20422",
+                "uid": "bb697643-530f-4f0c-b02c-c313afa4c725"
+            },
+            "reason": "Created",
+            "reportingComponent": "kubelet",
+            "reportingInstance": "ip-10-0-5-254.us-east-2.compute.internal",
+            "source": {
+                "component": "kubelet",
+                "host": "ip-10-0-5-254.us-east-2.compute.internal"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-07-10T07:01:06Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "name": "cold-prepulled-run-9",
+                "namespace": "openshell",
+                "resourceVersion": "20229",
+                "uid": "1928f5bc-1c8d-432c-8206-e4a3f6324675"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-07-10T07:01:06Z",
+            "message": "Successfully pulled image \"ghcr.io/nvidia/openshell/supervisor:latest\" in 1.455s (1.455s including waiting). Image size: 16599000 bytes.",
+            "metadata": {
+                "creationTimestamp": "2026-07-10T07:01:06Z",
+                "name": "cold-prepulled-run-9.18c0db90822f23ee",
+                "namespace": "openshell",
+                "resourceVersion": "20437",
+                "uid": "b9dfccce-8efe-4f35-8651-26cac70c4941"
+            },
+            "reason": "Pulled",
+            "reportingComponent": "kubelet",
+            "reportingInstance": "ip-10-0-5-254.us-east-2.compute.internal",
+            "source": {
+                "component": "kubelet",
+                "host": "ip-10-0-5-254.us-east-2.compute.internal"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-07-10T07:01:06Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "fieldPath": "spec.containers{agent}",
+                "kind": "Pod",
+                "name": "cold-prepulled-run-9",
+                "namespace": "openshell",
+                "resourceVersion": "20229",
+                "uid": "1928f5bc-1c8d-432c-8206-e4a3f6324675"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-07-10T07:01:06Z",
+            "message": "Pulling image \"ghcr.io/nvidia/openshell-community/sandboxes/base:latest\"",
+            "metadata": {
+                "creationTimestamp": "2026-07-10T07:01:06Z",
+                "name": "cold-prepulled-run-9.18c0db908237f219",
+                "namespace": "openshell",
+                "resourceVersion": "20438",
+                "uid": "de1045b4-8b82-4d8b-b731-6779585cd1cb"
+            },
+            "reason": "Pulling",
+            "reportingComponent": "kubelet",
+            "reportingInstance": "ip-10-0-5-254.us-east-2.compute.internal",
+            "source": {
+                "component": "kubelet",
+                "host": "ip-10-0-5-254.us-east-2.compute.internal"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-07-10T07:01:06Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "fieldPath": "spec.containers{agent}",
+                "kind": "Pod",
+                "name": "cold-prepulled-run-9",
+                "namespace": "openshell",
+                "resourceVersion": "20229",
+                "uid": "1928f5bc-1c8d-432c-8206-e4a3f6324675"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-07-10T07:01:06Z",
+            "message": "Successfully pulled image \"ghcr.io/nvidia/openshell-community/sandboxes/base:latest\" in 309ms (309ms including waiting). Image size: 3422808342 bytes.",
+            "metadata": {
+                "creationTimestamp": "2026-07-10T07:01:06Z",
+                "name": "cold-prepulled-run-9.18c0db9094aa4623",
+                "namespace": "openshell",
+                "resourceVersion": "20440",
+                "uid": "8914a4a1-faca-482c-b364-760479b6a3ff"
+            },
+            "reason": "Pulled",
+            "reportingComponent": "kubelet",
+            "reportingInstance": "ip-10-0-5-254.us-east-2.compute.internal",
+            "source": {
+                "component": "kubelet",
+                "host": "ip-10-0-5-254.us-east-2.compute.internal"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-07-10T07:01:06Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "fieldPath": "spec.containers{agent}",
+                "kind": "Pod",
+                "name": "cold-prepulled-run-9",
+                "namespace": "openshell",
+                "resourceVersion": "20229",
+                "uid": "1928f5bc-1c8d-432c-8206-e4a3f6324675"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-07-10T07:01:06Z",
+            "message": "Container created",
+            "metadata": {
+                "creationTimestamp": "2026-07-10T07:01:06Z",
+                "name": "cold-prepulled-run-9.18c0db90999a3c56",
+                "namespace": "openshell",
+                "resourceVersion": "20441",
+                "uid": "ddc20841-2e0d-406a-a5d9-241849931d6a"
+            },
+            "reason": "Created",
+            "reportingComponent": "kubelet",
+            "reportingInstance": "ip-10-0-5-254.us-east-2.compute.internal",
+            "source": {
+                "component": "kubelet",
+                "host": "ip-10-0-5-254.us-east-2.compute.internal"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-07-10T07:01:06Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "fieldPath": "spec.containers{agent}",
+                "kind": "Pod",
+                "name": "cold-prepulled-run-9",
+                "namespace": "openshell",
+                "resourceVersion": "20229",
+                "uid": "1928f5bc-1c8d-432c-8206-e4a3f6324675"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-07-10T07:01:06Z",
+            "message": "Container started",
+            "metadata": {
+                "creationTimestamp": "2026-07-10T07:01:06Z",
+                "name": "cold-prepulled-run-9.18c0db909a0af5c0",
+                "namespace": "openshell",
+                "resourceVersion": "20442",
+                "uid": "c83f84e9-4988-4376-b036-6f20140a45a3"
+            },
+            "reason": "Started",
+            "reportingComponent": "kubelet",
+            "reportingInstance": "ip-10-0-5-254.us-east-2.compute.internal",
+            "source": {
+                "component": "kubelet",
+                "host": "ip-10-0-5-254.us-east-2.compute.internal"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 4,
+            "eventTime": null,
+            "firstTimestamp": "2026-07-10T07:00:15Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "name": "cold-prepulled-run-9",
+                "namespace": "openshell",
+                "resourceVersion": "20229",
+                "uid": "1928f5bc-1c8d-432c-8206-e4a3f6324675"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-07-10T07:01:08Z",
+            "message": "Pulling image \"ghcr.io/nvidia/openshell/supervisor:latest\"",
+            "metadata": {
+                "creationTimestamp": "2026-07-10T07:00:15Z",
+                "name": "cold-prepulled-run-9.18c0db84b4603040",
+                "namespace": "openshell",
+                "resourceVersion": "20452",
+                "uid": "33c1e597-4611-41b5-b7eb-dc837cfa95fa"
+            },
+            "reason": "Pulling",
+            "reportingComponent": "kubelet",
+            "reportingInstance": "ip-10-0-5-254.us-east-2.compute.internal",
+            "source": {
+                "component": "kubelet",
+                "host": "ip-10-0-5-254.us-east-2.compute.internal"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-07-10T07:01:08Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "name": "cold-prepulled-run-9",
+                "namespace": "openshell",
+                "resourceVersion": "20229",
+                "uid": "1928f5bc-1c8d-432c-8206-e4a3f6324675"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-07-10T07:01:08Z",
+            "message": "Successfully pulled image \"ghcr.io/nvidia/openshell/supervisor:latest\" in 1.723s (1.723s including waiting). Image size: 16599000 bytes.",
+            "metadata": {
+                "creationTimestamp": "2026-07-10T07:01:08Z",
+                "name": "cold-prepulled-run-9.18c0db9109e6b879",
+                "namespace": "openshell",
+                "resourceVersion": "20451",
+                "uid": "c2a5f01c-8d27-480a-aba1-f0d0e1cff564"
+            },
+            "reason": "Pulled",
+            "reportingComponent": "kubelet",
+            "reportingInstance": "ip-10-0-5-254.us-east-2.compute.internal",
+            "source": {
+                "component": "kubelet",
+                "host": "ip-10-0-5-254.us-east-2.compute.internal"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-07-10T07:01:09Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "name": "cold-prepulled-run-9",
+                "namespace": "openshell",
+                "resourceVersion": "20229",
+                "uid": "1928f5bc-1c8d-432c-8206-e4a3f6324675"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-07-10T07:01:09Z",
+            "message": "Successfully pulled image \"ghcr.io/nvidia/openshell/supervisor:latest\" in 345ms (345ms including waiting). Image size: 16599000 bytes.",
+            "metadata": {
+                "creationTimestamp": "2026-07-10T07:01:09Z",
+                "name": "cold-prepulled-run-9.18c0db912f65e2d3",
+                "namespace": "openshell",
+                "resourceVersion": "20454",
+                "uid": "511a9b90-d6cf-42eb-9786-a76b676c5199"
+            },
+            "reason": "Pulled",
+            "reportingComponent": "kubelet",
+            "reportingInstance": "ip-10-0-5-254.us-east-2.compute.internal",
+            "source": {
+                "component": "kubelet",
+                "host": "ip-10-0-5-254.us-east-2.compute.internal"
+            },
+            "type": "Normal"
+        }
+    ],
+    "kind": "List",
+    "metadata": {
+        "resourceVersion": ""
+    }
+}

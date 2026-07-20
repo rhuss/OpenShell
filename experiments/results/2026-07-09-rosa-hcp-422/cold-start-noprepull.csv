@@ -1,0 +1,6 @@
+run,experiment,config,create_ts,ready_ts,delta_ms,pod,status,scheduled_ms,pulled_ms,created_ms,started_ms,phase5_ms
+1,cold-start,noprepull,1783616392580032000,1783616430540589000,37960,unknown,ok,,,,,
+2,cold-start,noprepull,1783616433972325000,1783616462593678000,28621,unknown,ok,,,,,
+3,cold-start,noprepull,1783616466039834000,1783616478556702000,12516,unknown,ok,,,,,
+4,cold-start,noprepull,1783616481977386000,1783616498498773000,16521,unknown,ok,,,,,
+5,cold-start,noprepull,1783616501936618000,1783616518751389000,16814,unknown,ok,,,,,

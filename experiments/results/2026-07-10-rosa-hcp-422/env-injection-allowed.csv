@@ -1,0 +1,6 @@
+run,experiment,config,create_ts,ready_ts,delta_ms,pod,status,adoption
+1,env-injection,allowed,1783667286304290000,1783667297247287000,10942,unknown,ok,unknown
+2,env-injection,allowed,1783667301207272000,1783667319680230000,18472,unknown,ok,unknown
+3,env-injection,allowed,1783667323635709000,1783667340391980000,16756,unknown,ok,unknown
+4,env-injection,allowed,1783667344370919000,1783667357170344000,12799,unknown,ok,unknown
+5,env-injection,allowed,1783667361151936000,1783667372389368000,11237,unknown,ok,unknown

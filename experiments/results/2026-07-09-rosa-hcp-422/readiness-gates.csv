@@ -1,0 +1,11 @@
+run,experiment,config,create_ts,ready_ts,delta_ms,pod,status,scheduled_ms,pulled_ms,created_ms,started_ms,phase5_ms
+1,readiness-gates,readiness-gate,1783620006153548000,1783620008256954000,2103,readiness-gate-run-1,ok,,,,,
+2,readiness-gates,readiness-gate,1783620014172659000,1783620015190020000,1017,readiness-gate-run-2,ok,,,,,
+3,readiness-gates,readiness-gate,1783620020690305000,1783620023617311000,2927,readiness-gate-run-3,ok,,,,,
+4,readiness-gates,readiness-gate,1783620029207572000,1783620030452205000,1244,readiness-gate-run-4,ok,,,,,
+5,readiness-gates,readiness-gate,1783620035750071000,1783620038800880000,3050,readiness-gate-run-5,ok,,,,,
+6,readiness-gates,readiness-gate,1783620044241508000,1783620045374404000,1132,readiness-gate-run-6,ok,,,,,
+7,readiness-gates,readiness-gate,1783620050676861000,1783620053576329000,2899,readiness-gate-run-7,ok,,,,,
+8,readiness-gates,readiness-gate,1783620058905548000,1783620061932566000,3027,readiness-gate-run-8,ok,,,,,
+9,readiness-gates,readiness-gate,1783620067283234000,1783620070171525000,2888,readiness-gate-run-9,ok,,,,,
+10,readiness-gates,readiness-gate,1783620075490132000,1783620076523557000,1033,readiness-gate-run-10,ok,,,,,
