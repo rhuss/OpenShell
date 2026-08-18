@@ -48,6 +48,7 @@ mod service_routing;
 mod ssh_sessions;
 pub mod supervisor_session;
 mod telemetry;
+pub(crate) mod telemetry_relay;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 mod tls;
@@ -179,6 +180,10 @@ pub struct ServerState {
     /// Empty when OIDC is not configured — `authorize_workspace()` treats
     /// every authenticated user as Platform Admin in that case.
     pub admin_role: String,
+
+    /// Dedicated OTLP exporter for relayed telemetry from supervisors.
+    /// `None` when the gateway has no OTLP endpoint configured.
+    pub telemetry_relay_exporter: Option<Arc<telemetry_relay::TelemetryRelayExporter>>,
 }
 
 fn is_benign_tls_handshake_failure(error: &std::io::Error) -> bool {
@@ -264,6 +269,7 @@ impl ServerState {
             provider_profile_sources:
                 provider_profile_sources::ProviderProfileSources::with_default_sources(),
             admin_role,
+            telemetry_relay_exporter: None,
         }
     }
 }
@@ -392,6 +398,8 @@ pub(crate) async fn run_server(
     state.middleware_registry = middleware_registry;
     state.gateway_interceptors = gateway_interceptors;
     state.provider_profile_sources = provider_profile_sources;
+    state.telemetry_relay_exporter =
+        telemetry_relay::try_create_exporter(config_file.as_ref()).await;
 
     // Load the gateway-minted sandbox JWT signing key when configured.
     // Optional so single-driver dev deployments without certgen continue

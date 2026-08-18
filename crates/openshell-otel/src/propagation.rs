@@ -52,6 +52,31 @@ impl Injector for MetadataMapInjector<'_> {
     }
 }
 
+/// Writes OpenTelemetry propagation fields to HTTP headers.
+#[derive(Debug)]
+pub struct HeaderMapInjector<'a>(pub &'a mut HeaderMap);
+
+impl Injector for HeaderMapInjector<'_> {
+    fn set(&mut self, key: &str, value: String) {
+        let Ok(key) = key.parse::<http::header::HeaderName>() else {
+            return;
+        };
+        let Ok(value) = value.parse() else {
+            return;
+        };
+        self.0.insert(key, value);
+    }
+}
+
+/// Inject W3C traceparent into HTTP headers if not already present.
+pub fn inject_traceparent_if_missing(headers: &mut HeaderMap) {
+    if headers.contains_key("traceparent") {
+        return;
+    }
+    let context = tracing::Span::current().context();
+    TraceContextPropagator::new().inject_context(&context, &mut HeaderMapInjector(headers));
+}
+
 /// Injects the active W3C trace context into an outbound tonic request.
 #[derive(Debug, Clone, Copy)]
 pub struct TraceContextInterceptor;

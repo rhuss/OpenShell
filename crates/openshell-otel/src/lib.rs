@@ -4,7 +4,7 @@
 //! Shared OpenTelemetry trace export support for `OpenShell` services.
 
 mod grpc;
-mod propagation;
+pub mod propagation;
 
 pub use grpc::RecordGrpcFailure;
 pub use propagation::{HeaderMapExtractor, MetadataMapInjector, TraceContextInterceptor};

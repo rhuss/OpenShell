@@ -274,6 +274,10 @@ fn map_session_stream_message<T>(
 ///
 /// The task runs for the lifetime of the sandbox process, reconnecting with
 /// exponential backoff on failures.
+///
+/// `telemetry_rx` is an optional channel for receiving telemetry messages from
+/// the relay forwarder. The session drains this channel and forwards the
+/// messages to the gateway.
 pub fn spawn(
     endpoint: String,
     sandbox_id: String,
@@ -281,6 +285,7 @@ pub fn spawn(
     netns_fd: Option<i32>,
     expected_ssh_peer_pid: Option<u32>,
     terminating: Arc<AtomicBool>,
+    telemetry_rx: Option<mpsc::Receiver<SupervisorMessage>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(run_session_loop(
         endpoint,
@@ -289,6 +294,7 @@ pub fn spawn(
         netns_fd,
         expected_ssh_peer_pid,
         terminating,
+        telemetry_rx,
     ))
 }
 
@@ -299,9 +305,11 @@ async fn run_session_loop(
     netns_fd: Option<i32>,
     expected_ssh_peer_pid: Option<u32>,
     terminating: Arc<AtomicBool>,
+    telemetry_rx: Option<mpsc::Receiver<SupervisorMessage>>,
 ) {
     let mut backoff = INITIAL_BACKOFF;
     let mut attempt: u64 = 0;
+    let mut telemetry_rx = telemetry_rx;
 
     loop {
         attempt += 1;
@@ -313,6 +321,7 @@ async fn run_session_loop(
             netns_fd,
             expected_ssh_peer_pid,
             Arc::clone(&terminating),
+            &mut telemetry_rx,
         )
         .await
         {
@@ -344,6 +353,7 @@ async fn run_single_session(
     netns_fd: Option<i32>,
     expected_ssh_peer_pid: Option<u32>,
     terminating: Arc<AtomicBool>,
+    telemetry_rx: &mut Option<mpsc::Receiver<SupervisorMessage>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Connect to the gateway. The same `Channel` is used for both the
     // long-lived control stream and all data-plane `RelayStream` calls, so
@@ -364,6 +374,7 @@ async fn run_single_session(
         payload: Some(supervisor_message::Payload::Hello(SupervisorHello {
             sandbox_id: sandbox_id.to_string(),
             instance_id: instance_id.clone(),
+            capabilities: vec!["telemetry_relay".to_string()],
         })),
     })
     .await
@@ -390,6 +401,8 @@ async fn run_single_session(
         _ => return Err("expected SessionAccepted or SessionRejected".into()),
     };
 
+    let telemetry_confirmed = accepted.capabilities.iter().any(|c| c == "telemetry_relay");
+
     let heartbeat_secs = accepted.heartbeat_interval_secs.max(5);
     let event = session_established_event(
         openshell_ocsf::ctx::ctx(),
@@ -399,7 +412,7 @@ async fn run_single_session(
     );
     ocsf_emit!(event);
 
-    // Main loop: receive gateway messages + send heartbeats.
+    // Main loop: receive gateway messages + send heartbeats + drain telemetry.
     let mut heartbeat_interval =
         tokio::time::interval(Duration::from_secs(u64::from(heartbeat_secs)));
     heartbeat_interval.tick().await; // skip immediate tick
@@ -437,6 +450,16 @@ async fn run_single_session(
                 };
                 if tx.send(hb).await.is_err() {
                     return Err("outbound channel closed".into());
+                }
+            }
+            telemetry_msg = async {
+                match telemetry_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            }, if telemetry_confirmed => {
+                if let Some(msg) = telemetry_msg {
+                    let _ = tx.try_send(msg);
                 }
             }
         }

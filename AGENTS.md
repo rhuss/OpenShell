@@ -255,3 +255,18 @@ When behavior, commands, or development workflows change, review the related age
 - Never commit secrets, API keys, or credentials. If a file looks like it contains secrets (`.env`, `credentials.json`, etc.), do not stage it.
 - Do not run destructive operations (force push, hard reset, database drops) without explicit human confirmation.
 - Scope changes to the issue at hand. Do not make unrelated changes in the same branch.
+
+<!-- >>> spex managed Codex guidance >>>
+This block is managed from .specify/spex.json. Keep project guidance outside it.
+-->
+
+## Spex workflow in Codex
+
+Invoke Spex skills with `$`, for example `$speckit-specify`, `$speckit-plan`,
+`$speckit-tasks`, and `$speckit-implement`. Do not print `/...` examples for
+Codex skills. Use `$speckit-spex-help` for the current command list.
+
+When a Spex skill needs a choice, present a short numbered list inline and wait
+for the answer. Use Codex subagents only when the user requests parallel work.
+
+<!-- <<< spex managed Codex guidance <<< -->
