@@ -90,5 +90,10 @@ e2e_write_podman_gateway_config() {
       printf '\n[openshell.gateway.otlp]\n'
       printf 'endpoint = %s\n' "$(e2e_podman_toml_string "${OPENSHELL_E2E_OTLP_ENDPOINT}")"
     fi
+    # Optional separate collector for relayed agent traces.
+    if [ -n "${OPENSHELL_E2E_OTLP_AGENT_ENDPOINT:-}" ]; then
+      printf '\n[openshell.gateway.otlp.traces.agent]\n'
+      printf 'endpoint = %s\n' "$(e2e_podman_toml_string "${OPENSHELL_E2E_OTLP_AGENT_ENDPOINT}")"
+    fi
   } >>"${output}"
 }

@@ -560,7 +560,7 @@ pub mod test_exporter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config_file::{OcsfOtlpConfig, OtlpTracesConfig};
+    use crate::config_file::{AgentTraces, OcsfOtlpConfig, OtlpTracesConfig};
     use crate::test_environment::Environment;
 
     fn config() -> OtlpConfig {
@@ -573,6 +573,7 @@ mod tests {
             traces: Some(OtlpTracesConfig {
                 endpoint: endpoint.into(),
             }),
+            agent_traces: AgentTraces::Endpoint(endpoint.into()),
             ocsf: None,
         }
     }
@@ -651,6 +652,16 @@ mod tests {
         let export = export.expect("OCSF log export");
         assert!(export.tracer_provider().is_none());
         assert!(export.ocsf().is_some());
+        export.shutdown().await;
+
+        // Agent traces alone are relayed by supervisors; the gateway exports
+        // nothing of its own.
+        cfg.ocsf = None;
+        let (export, error) = OtlpExport::start(Some(&cfg), GatewayResourceAttributes::default());
+        assert!(error.is_none(), "unexpected setup error: {error:?}");
+        let export = export.expect("agent trace relay only");
+        assert!(export.tracer_provider().is_none());
+        assert!(export.ocsf().is_none());
         export.shutdown().await;
     }
 

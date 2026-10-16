@@ -197,6 +197,12 @@ pub struct DockerComputeConfig {
     /// supplies its own export endpoint; driver TOML cannot set it.
     #[serde(skip)]
     pub supervisor_otlp_endpoint: Option<String>,
+
+    /// OTLP/gRPC collector endpoint that supervisors relay agent traces to.
+    /// The gateway supplies its own resolved endpoint; driver TOML cannot set
+    /// it.
+    #[serde(skip)]
+    pub supervisor_otlp_agent_endpoint: Option<String>,
     /// Networking mode for the supervisor only. Workloads always use network=none.
     pub supervisor_network_mode: DockerSupervisorNetworkMode,
 
@@ -312,6 +318,7 @@ impl Default for DockerComputeConfig {
             sandbox_label: "default".to_string(),
             grpc_endpoint: String::new(),
             supervisor_otlp_endpoint: None,
+            supervisor_otlp_agent_endpoint: None,
             supervisor_network_mode: DockerSupervisorNetworkMode::Host,
             host_gateway_ip: None,
             supervisor_ocsf_export: None,
@@ -351,6 +358,7 @@ struct DockerDriverRuntimeConfig {
     supervisor_image_id: String,
     supervisor_grpc_endpoint: String,
     supervisor_otlp_endpoint: Option<String>,
+    supervisor_otlp_agent_endpoint: Option<String>,
     supervisor_network_mode: DockerSupervisorNetworkMode,
     supervisor_endpoint_explicit: bool,
     bridge_default_endpoint: Option<String>,
@@ -1009,6 +1017,9 @@ impl DockerComputeDriver {
                 supervisor_image_id,
                 supervisor_grpc_endpoint,
                 supervisor_otlp_endpoint: docker_config.supervisor_otlp_endpoint.clone(),
+                supervisor_otlp_agent_endpoint: docker_config
+                    .supervisor_otlp_agent_endpoint
+                    .clone(),
                 supervisor_network_mode: docker_config.supervisor_network_mode,
                 supervisor_endpoint_explicit,
                 bridge_default_endpoint,
@@ -5725,12 +5736,22 @@ fn docker_child_environment(sandbox: &DriverSandbox) -> HashMap<String, String> 
 }
 
 /// Environment that lets the supervisor export spans, joining the current
-/// trace, and OCSF events, identifying the gateway that launched it.
+/// trace, relay agent traces, and export OCSF events, identifying the gateway
+/// that launched it.
 fn supervisor_otlp_environment(config: &DockerDriverRuntimeConfig) -> Vec<String> {
     let traces = config.supervisor_otlp_endpoint.iter().flat_map(|endpoint| {
         std::iter::once((openshell_core::sandbox_env::OTLP_ENDPOINT, endpoint.clone()))
             .chain(openshell_otel::current_trace_context_environment())
     });
+    let agent_traces = config
+        .supervisor_otlp_agent_endpoint
+        .iter()
+        .map(|endpoint| {
+            (
+                openshell_core::sandbox_env::OTLP_AGENT_ENDPOINT,
+                endpoint.clone(),
+            )
+        });
     let ocsf = config
         .supervisor_ocsf_export
         .iter()
@@ -5740,6 +5761,7 @@ fn supervisor_otlp_environment(config: &DockerDriverRuntimeConfig) -> Vec<String
         .iter()
         .map(|name| (openshell_core::sandbox_env::GATEWAY_NAME, name.clone()));
     traces
+        .chain(agent_traces)
         .chain(ocsf)
         .chain(gateway_name)
         .map(|(name, value)| format!("{name}={value}"))

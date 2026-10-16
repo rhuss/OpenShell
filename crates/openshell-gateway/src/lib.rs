@@ -51,6 +51,25 @@ use openshell_server::config_file::OtlpConfig;
         feature = "compute-driver-podman"
     )
 ))]
+/// The trace endpoint and the agent trace relay endpoint that drivers pass to
+/// supervisors, each resolved separately from `[otlp]`.
+fn supervisor_trace_endpoints(otlp: Option<&OtlpConfig>) -> (Option<String>, Option<String>) {
+    (
+        otlp.and_then(OtlpConfig::traces_endpoint)
+            .map(str::to_string),
+        otlp.and_then(OtlpConfig::agent_traces_endpoint)
+            .map(str::to_string),
+    )
+}
+
+#[cfg(all(
+    not(target_os = "windows"),
+    any(
+        feature = "compute-driver-docker",
+        feature = "compute-driver-kubernetes",
+        feature = "compute-driver-podman"
+    )
+))]
 /// The OCSF event export that drivers pass to supervisors, from `[otlp.ocsf]`.
 fn supervisor_ocsf_export(
     otlp: Option<&OtlpConfig>,
@@ -279,10 +298,10 @@ impl openshell_server::ComputeDriverFactory for KubernetesFactory {
         context: openshell_server::ComputeDriverBuildContext<'_>,
     ) -> openshell_core::Result<openshell_server::ComputeDriverInstance> {
         let mut config = kubernetes_config(context.config_context())?;
-        config.supervisor_otlp_endpoint = context
-            .otlp_config()
-            .and_then(OtlpConfig::traces_endpoint)
-            .map(str::to_string);
+        (
+            config.supervisor_otlp_endpoint,
+            config.supervisor_otlp_agent_endpoint,
+        ) = supervisor_trace_endpoints(context.otlp_config());
         config.supervisor_ocsf_export = supervisor_ocsf_export(context.otlp_config());
         config.supervisor_gateway_name = Some(context.gateway_name().to_string());
         let driver = openshell_driver_kubernetes::KubernetesComputeDriver::new(
@@ -345,10 +364,10 @@ impl openshell_server::ComputeDriverFactory for DockerFactory {
         context: openshell_server::ComputeDriverBuildContext<'_>,
     ) -> openshell_core::Result<openshell_server::ComputeDriverInstance> {
         let mut config = docker_config(context.config_context())?;
-        config.supervisor_otlp_endpoint = context
-            .otlp_config()
-            .and_then(OtlpConfig::traces_endpoint)
-            .map(str::to_string);
+        (
+            config.supervisor_otlp_endpoint,
+            config.supervisor_otlp_agent_endpoint,
+        ) = supervisor_trace_endpoints(context.otlp_config());
         config.supervisor_ocsf_export = supervisor_ocsf_export(context.otlp_config());
         config.supervisor_gateway_name = Some(context.gateway_name().to_string());
         require_guest_tls_for_local_driver(&context, "docker")?;
@@ -412,10 +431,10 @@ impl openshell_server::ComputeDriverFactory for PodmanFactory {
         context: openshell_server::ComputeDriverBuildContext<'_>,
     ) -> openshell_core::Result<openshell_server::ComputeDriverInstance> {
         let mut config = podman_config(context.config_context())?;
-        config.supervisor_otlp_endpoint = context
-            .otlp_config()
-            .and_then(OtlpConfig::traces_endpoint)
-            .map(str::to_string);
+        (
+            config.supervisor_otlp_endpoint,
+            config.supervisor_otlp_agent_endpoint,
+        ) = supervisor_trace_endpoints(context.otlp_config());
         config.supervisor_ocsf_export = supervisor_ocsf_export(context.otlp_config());
         config.supervisor_gateway_name = Some(context.gateway_name().to_string());
         require_guest_tls_for_local_driver(&context, "podman")?;
@@ -669,6 +688,53 @@ mod tests {
             "process-environment"
         );
         assert_eq!(prefer_environment("driver-toml", None), "driver-toml");
+    }
+
+    #[test]
+    #[cfg(all(
+        not(target_os = "windows"),
+        any(
+            feature = "compute-driver-docker",
+            feature = "compute-driver-kubernetes",
+            feature = "compute-driver-podman"
+        )
+    ))]
+    fn supervisors_receive_trace_and_agent_trace_endpoints_separately() {
+        use openshell_server::config_file::{AgentTraces, OtlpTracesConfig};
+
+        let otlp = |traces: Option<&str>, agent_traces| OtlpConfig {
+            service_name: None,
+            traces: traces.map(|endpoint| OtlpTracesConfig {
+                endpoint: endpoint.to_string(),
+            }),
+            agent_traces,
+            ocsf: None,
+        };
+        assert_eq!(supervisor_trace_endpoints(None), (None, None));
+        assert_eq!(
+            supervisor_trace_endpoints(Some(&otlp(
+                Some("http://traces:4317"),
+                AgentTraces::Endpoint("http://agents:4317".to_string()),
+            ))),
+            (
+                Some("http://traces:4317".to_string()),
+                Some("http://agents:4317".to_string()),
+            )
+        );
+        assert_eq!(
+            supervisor_trace_endpoints(Some(&otlp(
+                Some("http://traces:4317"),
+                AgentTraces::Disabled,
+            ))),
+            (Some("http://traces:4317".to_string()), None)
+        );
+        assert_eq!(
+            supervisor_trace_endpoints(Some(&otlp(
+                None,
+                AgentTraces::Endpoint("http://agents:4317".to_string()),
+            ))),
+            (None, Some("http://agents:4317".to_string()))
+        );
     }
 
     #[test]

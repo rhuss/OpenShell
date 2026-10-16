@@ -35,6 +35,8 @@ endpoint = "https://backend:4317"
 
 For span names, resource attributes, and gateway names, refer to [Traces](/observability/traces).
 
+Sandboxes also relay the traces that their workloads export, to the trace collector or to a separate collector named in `[openshell.gateway.otlp.traces.agent]`. The relay forwards only to plaintext `http://` collectors. Refer to [Agent trace relay](/how-it-works/gateways/configuration#agent-trace-relay).
+
 ## Metrics
 
 The gateway serves Prometheus metrics for API requests, readiness, gateway interceptors, OCSF output, and multi-replica capacity, on a listener separate from its API. Use them to alert on saturation and to choose autoscaling signals.

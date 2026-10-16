@@ -309,6 +309,21 @@ tests:
           path: data["gateway.toml"]
           pattern: '(?ms)\[openshell\.gateway\.otlp\]\nendpoint'
 
+  - it: renders the agent trace endpoint from gatewayConfig
+    template: templates/gateway-config.yaml
+    set:
+      server.otlp.endpoint: http://otel-collector.observability.svc:4317
+      gatewayConfig:
+        openshell.gateway.otlp.traces.agent:
+          endpoint: http://agent-collector:4317
+    asserts:
+      - matchRegex:
+          path: data["gateway.toml"]
+          pattern: '(?ms)\[openshell\.gateway\.otlp\]\nendpoint\s*=\s*"http://otel-collector\.observability\.svc:4317"'
+      - matchRegex:
+          path: data["gateway.toml"]
+          pattern: '(?m)^\[openshell\.gateway\.otlp\.traces\.agent\]\nendpoint\s*=\s*"http://agent-collector:4317"$'
+
   - it: omits OCSF export unless configured
     template: templates/gateway-config.yaml
     set:

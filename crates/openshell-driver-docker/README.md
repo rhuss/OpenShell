@@ -13,6 +13,12 @@ exports spans to the same OTLP/gRPC collector as
 `OPENSHELL_OTLP_ENDPOINT`, continues W3C trace context from gateway RPC
 metadata, and flushes spans during graceful shutdown.
 
+The driver passes supervisors the trace endpoint as `OPENSHELL_OTLP_ENDPOINT`
+and the agent trace relay endpoint as `OPENSHELL_OTLP_AGENT_ENDPOINT`. The
+in-process driver takes both from the gateway's resolved `[openshell.gateway.otlp]`
+configuration. The standalone driver accepts them as `--otlp-endpoint` and
+`--otlp-agent-endpoint`, or through the environment variables of the same names.
+
 ## Runtime Model
 
 Caller driver config is disabled by default. Existing volumes require

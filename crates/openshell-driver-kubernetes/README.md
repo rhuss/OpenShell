@@ -47,6 +47,12 @@ standalone forms. Standalone deployments set `--gateway-name` or
 `OPENSHELL_GATEWAY_NAME` so exported spans carry the same
 `openshell.gateway.name` resource attribute as gateway spans.
 
+Supervisor pods receive the trace endpoint as `OPENSHELL_OTLP_ENDPOINT` and the
+agent trace relay endpoint as `OPENSHELL_OTLP_AGENT_ENDPOINT`. The in-process
+driver takes both from the gateway's resolved `[openshell.gateway.otlp]`
+configuration. Standalone deployments set `--otlp-endpoint` and
+`--otlp-agent-endpoint`, or the environment variables of the same names.
+
 When it creates an Agent Sandbox resource, the driver serializes the active W3C
 trace context into the controller-reserved `opentelemetry.io/trace-context`
 annotation. An OTLP-enabled Agent Sandbox controller can therefore attach its

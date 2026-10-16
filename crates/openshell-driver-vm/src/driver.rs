@@ -263,6 +263,11 @@ pub struct VmDriverConfig {
     /// supplies its own export endpoint; driver TOML cannot set it.
     #[serde(skip)]
     pub supervisor_otlp_endpoint: Option<String>,
+    /// OTLP/gRPC collector endpoint that supervisors relay agent traces to.
+    /// The gateway supplies its own resolved endpoint; driver TOML cannot set
+    /// it.
+    #[serde(skip)]
+    pub supervisor_otlp_agent_endpoint: Option<String>,
     /// OCSF event export passed to supervisors. The gateway supplies its own
     /// export; driver TOML cannot set it.
     #[serde(skip)]
@@ -323,6 +328,10 @@ impl std::fmt::Debug for VmDriverConfig {
         f.debug_struct("VmDriverConfig")
             .field("grpc_endpoint", &self.grpc_endpoint)
             .field("supervisor_otlp_endpoint", &self.supervisor_otlp_endpoint)
+            .field(
+                "supervisor_otlp_agent_endpoint",
+                &self.supervisor_otlp_agent_endpoint,
+            )
             .field("supervisor_ocsf_export", &self.supervisor_ocsf_export)
             .field("supervisor_gateway_name", &self.supervisor_gateway_name)
             .field("state_dir", &self.state_dir)
@@ -389,6 +398,7 @@ impl Default for VmDriverConfig {
         Self {
             grpc_endpoint: String::new(),
             supervisor_otlp_endpoint: None,
+            supervisor_otlp_agent_endpoint: None,
             supervisor_ocsf_export: None,
             supervisor_gateway_name: None,
             allow_driver_config: false,
@@ -419,6 +429,30 @@ impl Default for VmDriverConfig {
             rootfs_tar_max_bytes: None,
         }
     }
+}
+
+/// Environment that lets the supervisor export spans, joining the current
+/// trace, relay agent traces, and export OCSF events, identifying the gateway
+/// that launched it.
+fn supervisor_otlp_environment(config: &VmDriverConfig) -> Vec<(&'static str, String)> {
+    let mut environment = Vec::new();
+    if let Some(endpoint) = &config.supervisor_otlp_endpoint {
+        environment.push((openshell_core::sandbox_env::OTLP_ENDPOINT, endpoint.clone()));
+        environment.extend(openshell_otel::current_trace_context_environment());
+    }
+    if let Some(endpoint) = &config.supervisor_otlp_agent_endpoint {
+        environment.push((
+            openshell_core::sandbox_env::OTLP_AGENT_ENDPOINT,
+            endpoint.clone(),
+        ));
+    }
+    if let Some(export) = &config.supervisor_ocsf_export {
+        environment.extend(export.environment());
+    }
+    if let Some(name) = &config.supervisor_gateway_name {
+        environment.push((openshell_core::sandbox_env::GATEWAY_NAME, name.clone()));
+    }
+    environment
 }
 
 impl VmDriverConfig {
@@ -993,17 +1027,7 @@ impl VmDriver {
                 openshell_core::sandbox_env::TELEMETRY_ENABLED,
                 openshell_core::telemetry::enabled_env_value(),
             );
-        if let Some(endpoint) = &self.config.supervisor_otlp_endpoint {
-            command
-                .env(openshell_core::sandbox_env::OTLP_ENDPOINT, endpoint)
-                .envs(openshell_otel::current_trace_context_environment());
-        }
-        if let Some(export) = &self.config.supervisor_ocsf_export {
-            command.envs(export.environment());
-        }
-        if let Some(name) = &self.config.supervisor_gateway_name {
-            command.env(openshell_core::sandbox_env::GATEWAY_NAME, name);
-        }
+        command.envs(supervisor_otlp_environment(&self.config));
         if let Some(server_name) = gateway_tls_server_name {
             command.env(
                 openshell_core::sandbox_env::GATEWAY_TLS_SERVER_NAME,
@@ -7566,6 +7590,44 @@ mod tests {
 
         assert_eq!(result.unwrap(), "success");
         assert_eq!(attempts.load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
+    fn supervisor_otlp_environment_carries_only_configured_signals() {
+        use openshell_core::sandbox_env::{OTLP_AGENT_ENDPOINT, OTLP_ENDPOINT};
+
+        assert!(supervisor_otlp_environment(&VmDriverConfig::default()).is_empty());
+
+        let traces_only = supervisor_otlp_environment(&VmDriverConfig {
+            supervisor_otlp_endpoint: Some("http://traces:4317".to_string()),
+            ..Default::default()
+        });
+        assert_eq!(
+            traces_only.first(),
+            Some(&(OTLP_ENDPOINT, "http://traces:4317".to_string()))
+        );
+        assert!(
+            traces_only
+                .iter()
+                .all(|(name, _)| *name != OTLP_AGENT_ENDPOINT),
+            "a disabled agent trace relay gets no endpoint"
+        );
+
+        assert_eq!(
+            supervisor_otlp_environment(&VmDriverConfig {
+                supervisor_otlp_agent_endpoint: Some("http://agents:4317".to_string()),
+                ..Default::default()
+            }),
+            [(OTLP_AGENT_ENDPOINT, "http://agents:4317".to_string())]
+        );
+
+        let both = supervisor_otlp_environment(&VmDriverConfig {
+            supervisor_otlp_endpoint: Some("http://traces:4317".to_string()),
+            supervisor_otlp_agent_endpoint: Some("http://agents:4317".to_string()),
+            ..Default::default()
+        });
+        assert!(both.contains(&(OTLP_ENDPOINT, "http://traces:4317".to_string())));
+        assert!(both.contains(&(OTLP_AGENT_ENDPOINT, "http://agents:4317".to_string())));
     }
 
     #[test]

@@ -29,6 +29,10 @@ pub const LOG_LEVEL: &str = "OPENSHELL_LOG_LEVEL";
 /// OTLP/gRPC collector endpoint for supervisor trace export.
 pub const OTLP_ENDPOINT: &str = "OPENSHELL_OTLP_ENDPOINT";
 
+/// OTLP/gRPC collector endpoint that the supervisor's OTLP relay forwards
+/// agent traces to. Compute drivers set it; only the relay reads it.
+pub const OTLP_AGENT_ENDPOINT: &str = "OPENSHELL_OTLP_AGENT_ENDPOINT";
+
 /// OTLP/gRPC collector endpoint for supervisor OCSF event export.
 pub const OTLP_OCSF_ENDPOINT: &str = "OPENSHELL_OTLP_OCSF_ENDPOINT";
 

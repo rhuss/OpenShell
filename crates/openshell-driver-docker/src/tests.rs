@@ -213,6 +213,7 @@ fn runtime_config() -> DockerDriverRuntimeConfig {
         supervisor_image_id: "sha256:supervisor-test".to_string(),
         supervisor_grpc_endpoint: "https://host.openshell.internal:8443".to_string(),
         supervisor_otlp_endpoint: None,
+        supervisor_otlp_agent_endpoint: None,
         supervisor_network_mode: DockerSupervisorNetworkMode::Host,
         supervisor_endpoint_explicit: true,
         bridge_default_endpoint: Some("https://host.docker.internal:8443".to_string()),
@@ -1401,19 +1402,36 @@ fn docker_child_environment_strips_supervisor_control_keys() {
 #[test]
 fn supervisor_otlp_environment_carries_only_configured_signals() {
     use openshell_core::sandbox_env::{
-        GATEWAY_NAME, OTLP_ENDPOINT, OTLP_OCSF_ENDPOINT, OTLP_OCSF_SCHEMA_VERSION, OcsfOtlpExport,
+        GATEWAY_NAME, OTLP_AGENT_ENDPOINT, OTLP_ENDPOINT, OTLP_OCSF_ENDPOINT,
+        OTLP_OCSF_SCHEMA_VERSION, OcsfOtlpExport,
     };
 
     let mut config = runtime_config();
     assert!(supervisor_otlp_environment(&config).is_empty());
 
+    // A disabled agent trace relay gets no endpoint.
     config.supervisor_otlp_endpoint = Some("http://127.0.0.1:4317".to_string());
     assert_eq!(
         supervisor_otlp_environment(&config),
         [format!("{OTLP_ENDPOINT}=http://127.0.0.1:4317")]
     );
 
+    config.supervisor_otlp_agent_endpoint = Some("http://agents:4317".to_string());
+    assert_eq!(
+        supervisor_otlp_environment(&config),
+        [
+            format!("{OTLP_ENDPOINT}=http://127.0.0.1:4317"),
+            format!("{OTLP_AGENT_ENDPOINT}=http://agents:4317"),
+        ]
+    );
+
     config.supervisor_otlp_endpoint = None;
+    assert_eq!(
+        supervisor_otlp_environment(&config),
+        [format!("{OTLP_AGENT_ENDPOINT}=http://agents:4317")]
+    );
+
+    config.supervisor_otlp_agent_endpoint = None;
     config.supervisor_ocsf_export = Some(OcsfOtlpExport {
         endpoint: "http://siem:4317".to_string(),
         schema_version: Some("1.3".to_string()),
@@ -1430,6 +1448,23 @@ fn supervisor_otlp_environment_carries_only_configured_signals() {
     assert_eq!(
         supervisor_otlp_environment(&config).last(),
         Some(&format!("{GATEWAY_NAME}=prod-west"))
+    );
+}
+
+#[test]
+fn supervisor_otlp_environment_relays_agent_traces_to_the_shared_collector() {
+    use openshell_core::sandbox_env::{OTLP_AGENT_ENDPOINT, OTLP_ENDPOINT};
+
+    // Without an agent table, the gateway resolves both to the trace endpoint.
+    let mut config = runtime_config();
+    config.supervisor_otlp_endpoint = Some("http://collector:4317".to_string());
+    config.supervisor_otlp_agent_endpoint = Some("http://collector:4317".to_string());
+    assert_eq!(
+        supervisor_otlp_environment(&config),
+        [
+            format!("{OTLP_ENDPOINT}=http://collector:4317"),
+            format!("{OTLP_AGENT_ENDPOINT}=http://collector:4317"),
+        ]
     );
 }
 

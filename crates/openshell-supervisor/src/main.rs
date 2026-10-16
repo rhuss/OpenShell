@@ -88,6 +88,11 @@ struct Args {
     #[arg(long, env = openshell_core::sandbox_env::OTLP_ENDPOINT)]
     otlp_endpoint: Option<String>,
 
+    /// OTLP/gRPC collector endpoint that the OTLP relay forwards agent
+    /// traces to.
+    #[arg(long, env = openshell_core::sandbox_env::OTLP_AGENT_ENDPOINT)]
+    otlp_agent_endpoint: Option<String>,
+
     /// OTLP/gRPC collector endpoint for supervisor OCSF event export.
     #[arg(long, env = openshell_core::sandbox_env::OTLP_OCSF_ENDPOINT)]
     otlp_ocsf_endpoint: Option<String>,
@@ -474,7 +479,7 @@ fn main() -> Result<()> {
                     auth_bundle,
                     admitted_isolation_backend,
                     args.main_exit_marker,
-                    args.otlp_endpoint.clone(),
+                    args.otlp_agent_endpoint.clone(),
                 ))
                 .await;
                 supervisor_exit(result)
@@ -743,6 +748,27 @@ mod tests {
             ]
         );
         assert!(supervisor_resource_attributes(None, None).is_empty());
+    }
+
+    #[test]
+    fn agent_trace_relay_takes_its_own_endpoint() {
+        let args = Args::try_parse_from([
+            "openshell-supervisor",
+            "--otlp-endpoint",
+            "http://traces:4317",
+            "--otlp-agent-endpoint",
+            "http://agents:4317",
+        ])
+        .expect("parse agent trace endpoint");
+        assert_eq!(args.otlp_endpoint.as_deref(), Some("http://traces:4317"));
+        assert_eq!(
+            args.otlp_agent_endpoint.as_deref(),
+            Some("http://agents:4317")
+        );
+        let args =
+            Args::try_parse_from(["openshell-supervisor", "--otlp-endpoint", "http://t:4317"])
+                .expect("parse trace endpoint");
+        assert_eq!(args.otlp_agent_endpoint, None);
     }
 
     #[test]

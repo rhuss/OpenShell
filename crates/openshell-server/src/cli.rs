@@ -729,17 +729,38 @@ async fn run_from_args(
     if has_oidc {
         info!("OIDC authentication enabled");
     }
+    // Supervisors receive the agent trace endpoint from the configuration,
+    // whether or not the gateway's own export started.
+    let agent_traces_endpoint = otlp_config
+        .and_then(config_file::OtlpConfig::agent_traces_endpoint)
+        .map(tracing::field::display);
+    let agent_traces = otlp_config.and_then(|otlp| match otlp.agent_traces {
+        config_file::AgentTraces::Endpoint(_) => None,
+        config_file::AgentTraces::Disabled => Some("disabled"),
+        config_file::AgentTraces::Unresolved => Some("no endpoint"),
+    });
     if let Some(err) = otlp_error.as_ref().or(driver_otlp_error.as_ref()) {
         error!(
             error = %err,
+            agent_traces_endpoint,
+            agent_traces,
             "OTLP exporting is configured but could not be started; continuing without it"
         );
     } else if let Some(otlp) = &otlp_export {
-        info!(
-            traces_endpoint = otlp.traces_endpoint().map(tracing::field::display),
-            ocsf_endpoint = otlp.ocsf_endpoint().map(tracing::field::display),
-            "OTLP exporting enabled"
-        );
+        if otlp.traces_endpoint().is_none() && otlp.ocsf_endpoint().is_none() {
+            info!(
+                agent_traces_endpoint,
+                "OTLP agent trace relay enabled; gateway OTLP exporting disabled"
+            );
+        } else {
+            info!(
+                traces_endpoint = otlp.traces_endpoint().map(tracing::field::display),
+                ocsf_endpoint = otlp.ocsf_endpoint().map(tracing::field::display),
+                agent_traces_endpoint,
+                agent_traces,
+                "OTLP exporting enabled"
+            );
+        }
     }
     if prepared.config.auth.allow_unauthenticated_users {
         warn!(

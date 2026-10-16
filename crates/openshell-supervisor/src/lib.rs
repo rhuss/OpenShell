@@ -690,7 +690,7 @@ pub async fn run_sandbox(
     auth_bundle: openshell_core::jwt::SupervisorAuthBundle,
     admitted_isolation_backend: Option<String>,
     main_exit_marker: Option<std::path::PathBuf>,
-    otlp_endpoint: Option<String>,
+    otlp_agent_endpoint: Option<String>,
 ) -> Result<i32> {
     // Shared startup retains policy and networking state; box it to keep callers' futures small.
     Box::pin(run_sandbox_with_backend(
@@ -717,7 +717,7 @@ pub async fn run_sandbox(
             auth_bundle,
             admitted_isolation_backend,
             main_exit_marker,
-            otlp_endpoint,
+            otlp_agent_endpoint,
         },
     ))
     .await
@@ -747,7 +747,7 @@ struct SandboxRunConfig {
     main_exit_marker: Option<std::path::PathBuf>,
     /// OTLP/gRPC collector for relayed agent traces; `None` keeps the relay
     /// inactive.
-    otlp_endpoint: Option<String>,
+    otlp_agent_endpoint: Option<String>,
 }
 
 /// Trusted composition chooses the setup before shared admission, policy, and
@@ -779,7 +779,7 @@ async fn run_sandbox_with_backend(
         auth_bundle,
         admitted_isolation_backend,
         main_exit_marker,
-        otlp_endpoint,
+        otlp_agent_endpoint,
     } = config;
     // The current client attachment adapter is SSH; retaining a process's I/O
     // internally does not make it reachable by a foreground client.
@@ -999,7 +999,7 @@ async fn run_sandbox_with_backend(
     // before attach so the agent spec can tell the boundary whether to point
     // workload SDKs at it.
     let (mut otlp_relay, otlp_reserved_destination) =
-        otlp_relay::activate(otlp_endpoint, sandbox_id.clone());
+        otlp_relay::activate(otlp_agent_endpoint, sandbox_id.clone());
 
     // Construct the selected client only after shared policy and credential
     // setup has completed. Keep live credentials and later CA publication in

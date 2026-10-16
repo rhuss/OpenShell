@@ -4,10 +4,14 @@
 //! Supervisor-direct OTLP trace relay.
 //!
 //! The gateway wrapper writes `[openshell.gateway.otlp].endpoint` from
-//! `OPENSHELL_E2E_OTLP_ENDPOINT`. These tests bind a collector stub on that
-//! endpoint's port and prove that a span exported from inside a sandbox
-//! arrives with the supervisor's attribution. With the variable unset or
-//! empty, the inert case runs instead.
+//! `OPENSHELL_E2E_OTLP_ENDPOINT` and, when set,
+//! `[openshell.gateway.otlp.traces.agent].endpoint` from
+//! `OPENSHELL_E2E_OTLP_AGENT_ENDPOINT`. These tests bind a collector stub on
+//! the agent trace endpoint's port, which falls back to the trace endpoint,
+//! and prove that a span exported from inside a sandbox arrives with the
+//! supervisor's attribution. With both variables set, the split-routing case
+//! also proves that agent spans and supervisor spans reach different
+//! collectors. With neither set, the inert case runs instead.
 
 #![cfg(feature = "e2e-local-container-driver")]
 
@@ -27,6 +31,7 @@ use serial_test::serial;
 const ENV_ENDPOINT: &str = "OTEL_EXPORTER_OTLP_ENDPOINT";
 const ENV_PROTOCOL: &str = "OTEL_EXPORTER_OTLP_PROTOCOL";
 const ENV_COLLECTOR: &str = "OPENSHELL_OTLP_ENDPOINT";
+const ENV_AGENT_COLLECTOR: &str = "OPENSHELL_OTLP_AGENT_ENDPOINT";
 
 /// Posts the base64 body from `OTLP_BODY_B64` to the relay and prints the
 /// status plus the complete environment, one `ENV key=value` line each, so
@@ -70,17 +75,26 @@ except Exception as error:
     print("ERROR", type(error).__name__)
 "#;
 
+fn non_empty_env(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|value| !value.is_empty())
+}
+
+/// The collector for infrastructure traces.
 fn collector_endpoint() -> Option<String> {
-    std::env::var("OPENSHELL_E2E_OTLP_ENDPOINT")
-        .ok()
-        .filter(|value| !value.is_empty())
+    non_empty_env("OPENSHELL_E2E_OTLP_ENDPOINT")
+}
+
+/// The collector for relayed agent traces: its own endpoint when the
+/// harness configures one, else the trace collector.
+fn agent_collector_endpoint() -> Option<String> {
+    non_empty_env("OPENSHELL_E2E_OTLP_AGENT_ENDPOINT").or_else(collector_endpoint)
 }
 
 fn collector_bind_addr(endpoint: &str) -> SocketAddr {
-    let url = url::Url::parse(endpoint).expect("OPENSHELL_E2E_OTLP_ENDPOINT is a URL");
+    let url = url::Url::parse(endpoint).expect("collector endpoint is a URL");
     let port = url
         .port_or_known_default()
-        .expect("OPENSHELL_E2E_OTLP_ENDPOINT names a port");
+        .expect("collector endpoint names a port");
     // Containers reach the host through its bridge address, not loopback.
     SocketAddr::from(([0, 0, 0, 0], port))
 }
@@ -88,7 +102,7 @@ fn collector_bind_addr(endpoint: &str) -> SocketAddr {
 /// `host:port` of the collector as the gateway configures it, the string
 /// that must not appear anywhere in the sandbox environment.
 fn collector_host_port(endpoint: &str) -> String {
-    let url = url::Url::parse(endpoint).expect("OPENSHELL_E2E_OTLP_ENDPOINT is a URL");
+    let url = url::Url::parse(endpoint).expect("collector endpoint is a URL");
     format!(
         "{}:{}",
         url.host_str().expect("collector host"),
@@ -253,8 +267,8 @@ fn assert_attribution(attributes: &HashMap<String, String>, sandbox_id: &str) {
 #[tokio::test]
 #[serial]
 async fn agent_span_reaches_collector_with_attribution() {
-    let Some(endpoint) = collector_endpoint() else {
-        eprintln!("OPENSHELL_E2E_OTLP_ENDPOINT is unset; skipping the collector case");
+    let Some(endpoint) = agent_collector_endpoint() else {
+        eprintln!("no OTLP collector endpoint is configured; skipping the collector case");
         return;
     };
     let collector = OtlpTestServer::start_on(collector_bind_addr(&endpoint)).await;
@@ -285,16 +299,20 @@ async fn agent_span_reaches_collector_with_attribution() {
         output.contains(&format!("ENV {ENV_PROTOCOL}=http/protobuf")),
         "the exporter protocol is set for the workload:\n{output}"
     );
-    // US1-S4: neither the variable nor the address itself is present anywhere.
-    assert!(
-        !output.contains(ENV_COLLECTOR),
-        "the collector variable must not be visible inside the sandbox:\n{output}"
-    );
-    let host_port = collector_host_port(&endpoint);
-    assert!(
-        !output.contains(&host_port),
-        "the collector address {host_port} must not appear in the sandbox environment:\n{output}"
-    );
+    // US1-S4: neither the variables nor the addresses are present anywhere.
+    for variable in [ENV_COLLECTOR, ENV_AGENT_COLLECTOR] {
+        assert!(
+            !output.contains(variable),
+            "{variable} must not be visible inside the sandbox:\n{output}"
+        );
+    }
+    for collector in std::iter::once(endpoint.clone()).chain(collector_endpoint()) {
+        let host_port = collector_host_port(&collector);
+        assert!(
+            !output.contains(&host_port),
+            "the collector address {host_port} must not appear in the sandbox environment:\n{output}"
+        );
+    }
 
     let id = sandbox_id(&sandbox.name).await.expect("sandbox id");
     // US1-S1: within 5 seconds.
@@ -311,8 +329,8 @@ async fn agent_span_reaches_collector_with_attribution() {
 #[tokio::test]
 #[serial]
 async fn relay_is_inert_without_collector() {
-    if collector_endpoint().is_some() {
-        eprintln!("OPENSHELL_E2E_OTLP_ENDPOINT is set; skipping the inert case");
+    if agent_collector_endpoint().is_some() {
+        eprintln!("an OTLP collector endpoint is configured; skipping the inert case");
         return;
     }
 
@@ -343,8 +361,8 @@ async fn relay_is_inert_without_collector() {
 #[tokio::test]
 #[serial]
 async fn span_emitted_before_exit_is_delivered() {
-    let Some(endpoint) = collector_endpoint() else {
-        eprintln!("OPENSHELL_E2E_OTLP_ENDPOINT is unset; skipping the flush case");
+    let Some(endpoint) = agent_collector_endpoint() else {
+        eprintln!("no OTLP collector endpoint is configured; skipping the flush case");
         return;
     };
     let collector = OtlpTestServer::start_on(collector_bind_addr(&endpoint)).await;
@@ -413,4 +431,99 @@ async fn span_emitted_before_exit_is_delivered() {
         assert_attribution(&spans[name], &ids[name]);
     }
     drop(collector.shutdown().await);
+}
+
+#[tokio::test]
+#[serial]
+async fn agent_and_supervisor_spans_reach_separate_collectors() {
+    let (Some(trace_endpoint), Some(agent_endpoint)) = (
+        collector_endpoint(),
+        non_empty_env("OPENSHELL_E2E_OTLP_AGENT_ENDPOINT"),
+    ) else {
+        eprintln!(
+            "OPENSHELL_E2E_OTLP_ENDPOINT or OPENSHELL_E2E_OTLP_AGENT_ENDPOINT is unset; \
+             skipping the split-routing case"
+        );
+        return;
+    };
+    let trace_collector = OtlpTestServer::start_on(collector_bind_addr(&trace_endpoint)).await;
+    let agent_collector = OtlpTestServer::start_on(collector_bind_addr(&agent_endpoint)).await;
+
+    let body = format!("OTLP_BODY_B64={}", encoded_request("split-span"));
+    let mut sandbox = SandboxGuard::create(&[
+        "--env",
+        &body,
+        "--no-auto-providers",
+        "--",
+        "python3",
+        "-c",
+        EXPORT_SCRIPT,
+    ])
+    .await
+    .expect("sandbox exports one span to the relay");
+    let output = sandbox.create_output.clone();
+    assert!(
+        output.contains("STATUS 200"),
+        "relay must accept the export:\n{output}"
+    );
+
+    let id = sandbox_id(&sandbox.name).await.expect("sandbox id");
+    let agent_spans = wait_for_spans(&agent_collector, &["split-span"], Duration::from_secs(5))
+        .await
+        .expect("agent span reaches the agent collector within 5 s");
+    assert_attribution(&agent_spans["split-span"], &id);
+    // The supervisor's own spans carry its sandbox id but not the agent
+    // source marker.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let received = trace_collector.received();
+        let own_span = received
+            .spans
+            .iter()
+            .zip(received.span_resources.iter())
+            .any(|(span, attributes)| {
+                span.name == "supervisor.startup"
+                    && attributes.get(SANDBOX_ID_KEY) == Some(&id)
+                    && !attributes.contains_key(SOURCE_KEY)
+            });
+        if own_span {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "supervisor spans must reach the trace collector; it holds {:?}",
+            received
+                .spans
+                .iter()
+                .map(|span| span.name.as_str())
+                .collect::<Vec<_>>()
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert!(
+        !trace_collector
+            .received()
+            .spans
+            .iter()
+            .any(|span| span.name == "split-span"),
+        "agent spans must not reach the trace collector"
+    );
+    let received = agent_collector.received();
+    let stray = received
+        .spans
+        .iter()
+        .zip(received.span_resources.iter())
+        .filter(|(_, attributes)| {
+            attributes.get(SOURCE_KEY).map(String::as_str) != Some(SOURCE_VALUE)
+        })
+        .map(|(span, _)| span.name.as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        stray.is_empty(),
+        "only relayed agent spans may reach the agent collector, found {stray:?}"
+    );
+
+    sandbox.cleanup().await;
+    drop(agent_collector.shutdown().await);
+    drop(trace_collector.shutdown().await);
 }

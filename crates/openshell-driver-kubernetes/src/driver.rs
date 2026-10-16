@@ -772,7 +772,8 @@ impl std::fmt::Debug for KubernetesComputeDriver {
 
 impl KubernetesComputeDriver {
     /// Environment that lets a supervisor export spans, joining the current
-    /// trace, and OCSF events, identifying the gateway that launched it.
+    /// trace, relay agent traces, and export OCSF events, identifying the
+    /// gateway that launched it.
     fn supervisor_otlp_environment(&self) -> Vec<(&'static str, String)> {
         let mut environment = Vec::new();
         if let Some(endpoint) = self.config.supervisor_otlp_endpoint.as_deref() {
@@ -781,6 +782,12 @@ impl KubernetesComputeDriver {
                 endpoint.to_string(),
             ));
             environment.extend(openshell_otel::current_trace_context_environment());
+        }
+        if let Some(endpoint) = &self.config.supervisor_otlp_agent_endpoint {
+            environment.push((
+                openshell_core::sandbox_env::OTLP_AGENT_ENDPOINT,
+                endpoint.clone(),
+            ));
         }
         if let Some(export) = &self.config.supervisor_ocsf_export {
             environment.extend(export.environment());
@@ -7701,7 +7708,8 @@ mod tests {
     #[tokio::test]
     async fn supervisor_otlp_environment_carries_only_configured_signals() {
         use openshell_core::sandbox_env::{
-            OTLP_ENDPOINT, OTLP_OCSF_ENDPOINT, OTLP_OCSF_SCHEMA_VERSION, OcsfOtlpExport,
+            OTLP_AGENT_ENDPOINT, OTLP_ENDPOINT, OTLP_OCSF_ENDPOINT, OTLP_OCSF_SCHEMA_VERSION,
+            OcsfOtlpExport,
         };
 
         let names = |config: KubernetesComputeConfig| {
@@ -7712,13 +7720,23 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert!(names(KubernetesComputeConfig::default()).is_empty());
+        let traces_only = names(KubernetesComputeConfig {
+            supervisor_otlp_endpoint: Some("http://traces:4317".into()),
+            ..Default::default()
+        });
+        assert_eq!(traces_only.first(), Some(&OTLP_ENDPOINT));
+        assert!(
+            !traces_only.contains(&OTLP_AGENT_ENDPOINT),
+            "a disabled agent trace relay gets no endpoint"
+        );
+
+        let driver = KubernetesComputeDriver::new_for_test(KubernetesComputeConfig {
+            supervisor_otlp_agent_endpoint: Some("http://agents:4317".into()),
+            ..Default::default()
+        });
         assert_eq!(
-            names(KubernetesComputeConfig {
-                supervisor_otlp_endpoint: Some("http://traces:4317".into()),
-                ..Default::default()
-            })
-            .first(),
-            Some(&OTLP_ENDPOINT)
+            driver.supervisor_otlp_environment(),
+            [(OTLP_AGENT_ENDPOINT, "http://agents:4317".to_string())]
         );
 
         let driver = KubernetesComputeDriver::new_for_test(KubernetesComputeConfig {

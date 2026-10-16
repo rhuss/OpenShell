@@ -8,7 +8,9 @@
 //! broker stages that connection to the supervisor, the network proxy hands
 //! the stream to [`receiver::OtlpConnectionServer`], and the accepted batch
 //! is enriched with the sandbox id, buffered, and forwarded over OTLP/gRPC to
-//! the collector the supervisor already uses for its own spans.
+//! the agent trace collector that the compute driver passes in
+//! `OPENSHELL_OTLP_AGENT_ENDPOINT`. The supervisor's own spans go to
+//! `OPENSHELL_OTLP_ENDPOINT` instead.
 
 pub mod buffer;
 pub mod enrichment;
@@ -192,7 +194,7 @@ impl RelayCounters {
 /// Input to [`start`].
 #[derive(Debug, Clone)]
 pub struct OtlpRelayConfig {
-    /// OTLP/gRPC collector URI (`OPENSHELL_OTLP_ENDPOINT`).
+    /// OTLP/gRPC collector URI (`OPENSHELL_OTLP_AGENT_ENDPOINT`).
     pub endpoint: String,
     /// Sandbox identifier attached to every forwarded resource.
     pub sandbox_id: String,
@@ -334,7 +336,7 @@ pub fn activate(
                 .severity(SeverityId::Informational)
                 .status(StatusId::Success)
                 .state(StateId::Disabled, "disabled")
-                .message("OTLP agent trace relay inactive: no collector endpoint configured")
+                .message("OTLP agent trace relay inactive: no agent trace endpoint configured")
                 .build()
         );
         return (None, None);
@@ -677,7 +679,12 @@ mod tests {
         ) {
             let mut visitor = EventVisitor::default();
             event.record(&mut visitor);
-            if let Some(message) = visitor.message {
+            // OCSF events carry their message in the event the bridge holds.
+            let ocsf_message = (event.metadata().target() == openshell_ocsf::OCSF_TARGET)
+                .then(openshell_ocsf::clone_current_event)
+                .flatten()
+                .and_then(|ocsf| ocsf.base().message.clone());
+            if let Some(message) = ocsf_message.or(visitor.message) {
                 self.0.lock().unwrap().push(CapturedEvent {
                     level: *event.metadata().level(),
                     message,
@@ -836,6 +843,46 @@ mod tests {
             .metrics()
             .num_alive_tasks();
         assert_eq!(before, after);
+    }
+
+    #[test]
+    fn activate_without_endpoint_reports_the_missing_agent_trace_endpoint() {
+        // Tracing callsite interest is process-wide, so concurrent tests that
+        // emit OCSF events without a subscriber can disable this thread's
+        // capture. Run the check in an isolated process with the same
+        // executable.
+        const CHILD: &str = "OPENSHELL_TEST_RELAY_INACTIVE_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "otlp_relay::tests::activate_without_endpoint_reports_the_missing_agent_trace_endpoint",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            // libtest also succeeds when the filter matches nothing.
+            assert!(
+                output.status.success() && stdout.contains("1 passed"),
+                "{stdout}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let capture = LogCapture::default();
+        let _guard = capture.install();
+        let (relay, reserved) = activate(None, Some("sb-test".into()));
+        assert!(relay.is_none());
+        assert!(reserved.is_none());
+        assert_eq!(
+            capture.count(
+                tracing::Level::INFO,
+                "OTLP agent trace relay inactive: no agent trace endpoint configured"
+            ),
+            1
+        );
     }
 
     #[tokio::test]

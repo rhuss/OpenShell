@@ -665,6 +665,11 @@ fn append_otlp_args(command: &mut Command, otlp_config: Option<&OtlpConfig>, gat
     if let Some(endpoint) = traces_endpoint {
         command.arg("--otlp-endpoint").arg(endpoint);
     }
+    // The relay attributes forwarded traces with the sandbox id only, so the
+    // agent trace endpoint alone does not need the gateway name.
+    if let Some(endpoint) = otlp_config.and_then(OtlpConfig::agent_traces_endpoint) {
+        command.arg("--otlp-agent-endpoint").arg(endpoint);
+    }
     if let Some(ocsf) = ocsf {
         command.arg("--otlp-ocsf-endpoint").arg(&ocsf.endpoint);
         if let Some(version) = ocsf.schema_version {
@@ -775,7 +780,7 @@ mod tests {
     };
     use openshell_core::UpstreamProxyConfig;
     use openshell_server::config_file::{
-        OcsfOtlpConfig, OcsfSchemaVersion, OtlpConfig, OtlpTracesConfig,
+        AgentTraces, OcsfOtlpConfig, OcsfSchemaVersion, OtlpConfig, OtlpTracesConfig,
     };
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixListener as StdUnixListener;
@@ -828,6 +833,7 @@ mod tests {
                 traces: Some(OtlpTracesConfig {
                     endpoint: "http://collector.internal:4317".to_string(),
                 }),
+                agent_traces: AgentTraces::Endpoint("http://agents.internal:4317".to_string()),
                 ocsf: None,
             }),
             "production-us-west",
@@ -843,9 +849,36 @@ mod tests {
             [
                 "--otlp-endpoint",
                 "http://collector.internal:4317",
+                "--otlp-agent-endpoint",
+                "http://agents.internal:4317",
                 "--gateway-name",
                 "production-us-west"
             ]
+        );
+    }
+
+    #[test]
+    fn vm_driver_command_relays_agent_traces_without_infrastructure_export() {
+        let mut command = tokio::process::Command::new("openshell-driver-vm");
+        append_otlp_args(
+            &mut command,
+            Some(&OtlpConfig {
+                service_name: None,
+                traces: None,
+                agent_traces: AgentTraces::Endpoint("http://agents.internal:4317".to_string()),
+                ocsf: None,
+            }),
+            "production-us-west",
+        );
+
+        let args = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            args,
+            ["--otlp-agent-endpoint", "http://agents.internal:4317"]
         );
     }
 
@@ -857,6 +890,7 @@ mod tests {
             Some(&OtlpConfig {
                 service_name: None,
                 traces: None,
+                agent_traces: AgentTraces::Unresolved,
                 ocsf: Some(OcsfOtlpConfig {
                     endpoint: "http://siem.internal:4317".to_string(),
                     schema_version: Some(OcsfSchemaVersion::V1_3),

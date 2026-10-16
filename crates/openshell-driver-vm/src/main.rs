@@ -100,6 +100,10 @@ struct Args {
     #[arg(long, env = "OPENSHELL_OTLP_ENDPOINT")]
     otlp_endpoint: Option<String>,
 
+    /// OTLP/gRPC collector endpoint that supervisors relay agent traces to.
+    #[arg(long, env = "OPENSHELL_OTLP_AGENT_ENDPOINT")]
+    otlp_agent_endpoint: Option<String>,
+
     /// OTLP/gRPC collector endpoint for supervisor OCSF event export.
     #[arg(long, env = "OPENSHELL_OTLP_OCSF_ENDPOINT")]
     otlp_ocsf_endpoint: Option<String>,
@@ -310,6 +314,7 @@ async fn main() -> Result<()> {
             .grpc_endpoint
             .ok_or_else(|| miette::miette!("OPENSHELL_GRPC_ENDPOINT is required"))?,
         supervisor_otlp_endpoint: args.otlp_endpoint.clone(),
+        supervisor_otlp_agent_endpoint: args.otlp_agent_endpoint.clone(),
         supervisor_gateway_name: args.gateway_name.clone(),
         supervisor_ocsf_export: args.otlp_ocsf_endpoint.clone().map(|endpoint| {
             openshell_core::sandbox_env::OcsfOtlpExport {
@@ -891,6 +896,21 @@ mod tests {
             args.is_ok(),
             "VM driver should accept the gateway OTLP endpoint"
         );
+    }
+
+    #[test]
+    fn accepts_gateway_agent_trace_endpoint() {
+        let args = Args::try_parse_from([
+            "openshell-driver-vm",
+            "--otlp-agent-endpoint",
+            "http://agents:4317",
+        ])
+        .expect("VM driver should accept the agent trace endpoint");
+        assert_eq!(
+            args.otlp_agent_endpoint.as_deref(),
+            Some("http://agents:4317")
+        );
+        assert_eq!(args.otlp_endpoint, None);
     }
 
     #[test]

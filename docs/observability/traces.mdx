@@ -30,6 +30,8 @@ In the Helm chart, set the table under `gatewayConfig`. The gateway passes the e
 | Compute drivers | Child spans for each compute-driver operation the gateway performs, from both the gateway's side and the driver's side. |
 | Sandbox supervisors | Supervisor startup, such as loading policy. |
 
+Sandboxes also relay the traces that their workloads export. Relayed agent traces go to the trace collector unless `[openshell.gateway.otlp.traces.agent]` names a separate collector for them. Refer to [Agent trace relay](/how-it-works/gateways/configuration#agent-trace-relay).
+
 Spans for routine or high-volume operations use DEBUG level, and the default INFO level does not export them. These include store operations, health checks, the RPCs that supervisors call on a timer (`GetSandboxConfig` and `ReportProviderReadiness`), and how supervisors handle egress connections. Set the gateway or sandbox log level to `debug` to include them.
 
 ## Span Names
@@ -69,7 +71,7 @@ Give each installation that reports to the same collector its own name, includin
 
 The gateway continues a valid W3C `traceparent` sent by the caller, so a client's trace can include the gateway's spans for its requests. Without one, the gateway starts a new trace.
 
-The gateway also passes its trace context to compute drivers, so driver spans appear in the same trace as the gateway request that caused them. Built-in drivers export their spans through the gateway's process. Managed external drivers receive the trace endpoint, gateway name, and compute driver from the gateway. Drivers that you run yourself own their telemetry configuration.
+The gateway also passes its trace context to compute drivers, so driver spans appear in the same trace as the gateway request that caused them. Built-in drivers export their spans through the gateway's process. Managed external drivers receive the trace endpoint, agent trace endpoint, gateway name, and compute driver from the gateway. Drivers that you run yourself own their telemetry configuration.
 
 ## Next Steps
 

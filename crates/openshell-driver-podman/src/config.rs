@@ -47,6 +47,11 @@ pub struct PodmanComputeConfig {
     /// supplies its own export endpoint; driver TOML cannot set it.
     #[serde(skip)]
     pub supervisor_otlp_endpoint: Option<String>,
+    /// OTLP/gRPC collector endpoint that supervisors relay agent traces to.
+    /// The gateway supplies its own resolved endpoint; driver TOML cannot set
+    /// it.
+    #[serde(skip)]
+    pub supervisor_otlp_agent_endpoint: Option<String>,
     /// OCSF event export passed to supervisors. The gateway supplies its own
     /// export; driver TOML cannot set it.
     #[serde(skip)]
@@ -539,6 +544,7 @@ impl Default for PodmanComputeConfig {
             image_pull_policy: ImagePullPolicy::default(),
             grpc_endpoint: String::new(),
             supervisor_otlp_endpoint: None,
+            supervisor_otlp_agent_endpoint: None,
             supervisor_ocsf_export: None,
             supervisor_gateway_name: None,
             gateway_port: openshell_core::config::DEFAULT_SERVER_PORT,

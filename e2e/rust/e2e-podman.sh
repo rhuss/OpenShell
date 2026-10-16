@@ -22,6 +22,12 @@ source "${ROOT}/e2e/support/conformance.sh"
 # host.containers.internal. Set the variable to an empty string to disable
 # export and run the relay's inert case instead.
 export OPENSHELL_E2E_OTLP_ENDPOINT="${OPENSHELL_E2E_OTLP_ENDPOINT-http://host.containers.internal:4317}"
+# Send relayed agent traces to a second collector stub so the otlp_relay test
+# covers split routing. Set the variable to an empty string to relay agent
+# traces to the trace collector instead.
+if [ -n "${OPENSHELL_E2E_OTLP_ENDPOINT}" ]; then
+  export OPENSHELL_E2E_OTLP_AGENT_ENDPOINT="${OPENSHELL_E2E_OTLP_AGENT_ENDPOINT-http://host.containers.internal:4327}"
+fi
 
 # Keep required branch CI on the Podman targets that are known to pass. The
 # unfiltered e2e:podman task remains available while the omitted targets are

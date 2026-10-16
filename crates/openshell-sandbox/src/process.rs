@@ -1347,13 +1347,20 @@ mod tests {
         };
         const OTEL_EXPORTER_OTLP_TRACES_COMPRESSION: &str = "OTEL_EXPORTER_OTLP_TRACES_COMPRESSION";
         const COLLECTOR_HOST: &str = "collector.invalid";
+        const AGENT_COLLECTOR_HOST: &str = "agent-traces.invalid";
         if run_in_isolated_child(
             "OPENSHELL_TEST_RELAY_ENV_CHILD",
             "process::tests::canonical_process_sees_relay_endpoint_and_never_the_collector",
-            &[(
-                openshell_core::sandbox_env::OTLP_ENDPOINT,
-                format!("http://{COLLECTOR_HOST}:4317"),
-            )],
+            &[
+                (
+                    openshell_core::sandbox_env::OTLP_ENDPOINT,
+                    format!("http://{COLLECTOR_HOST}:4317"),
+                ),
+                (
+                    openshell_core::sandbox_env::OTLP_AGENT_ENDPOINT,
+                    format!("http://{AGENT_COLLECTOR_HOST}:4317"),
+                ),
+            ],
         ) {
             return;
         }
@@ -1380,15 +1387,20 @@ mod tests {
                 relay_active,
             );
             let variables = probe_environment(cmd);
+            for variable in [
+                openshell_core::sandbox_env::OTLP_ENDPOINT,
+                openshell_core::sandbox_env::OTLP_AGENT_ENDPOINT,
+            ] {
+                assert!(
+                    !variables.contains_key(variable),
+                    "{variable} reached the workload: {variables:?}"
+                );
+            }
             assert!(
-                !variables.contains_key(openshell_core::sandbox_env::OTLP_ENDPOINT),
-                "the collector variable reached the workload: {variables:?}"
-            );
-            assert!(
-                !variables
-                    .values()
-                    .any(|value| value.contains(COLLECTOR_HOST)),
-                "the collector address reached the workload: {variables:?}"
+                !variables.values().any(|value| {
+                    value.contains(COLLECTOR_HOST) || value.contains(AGENT_COLLECTOR_HOST)
+                }),
+                "a collector address reached the workload: {variables:?}"
             );
             variables
         };

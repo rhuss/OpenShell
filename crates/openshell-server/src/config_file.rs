@@ -286,57 +286,116 @@ impl TryFrom<RawOcsfLogConfig> for OcsfLogConfig {
 /// `[openshell.gateway.otlp]` section and its per-signal tables.
 ///
 /// `endpoint` is the collector for every enabled signal, and on its own
-/// enables trace export. `[otlp.traces]` overrides the trace endpoint, and
-/// `[otlp.ocsf]` with `enabled = true` exports OCSF events as log records,
-/// optionally to a different endpoint. SDK tuning knobs are deliberately absent — see
-/// [`crate::otel_tracing`] for what this table owns and what the `OTEL_*`
-/// environment variables own.
+/// enables trace export. `[otlp.traces]` overrides the trace endpoint,
+/// `[otlp.traces.agent]` overrides the collector that supervisors relay agent
+/// traces to, and `[otlp.ocsf]` with `enabled = true` exports OCSF events as
+/// log records, optionally to a different endpoint. SDK tuning knobs are
+/// deliberately absent. See [`crate::otel_tracing`] for what this table owns
+/// and what the `OTEL_*` environment variables own.
 ///
 /// Endpoints are resolved when parsing, so each enabled signal carries its own.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(try_from = "RawOtlpConfig")]
 pub struct OtlpConfig {
     /// `service.name` resource attribute. Defaults to `openshell-gateway`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service_name: Option<String>,
 
     /// Trace export, when enabled.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub traces: Option<OtlpTracesConfig>,
 
+    /// The collector that supervisors relay agent traces to.
+    pub agent_traces: AgentTraces,
+
     /// OCSF event export as OTLP log records, when enabled.
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        serialize_with = "serialize_enabled_ocsf"
-    )]
     pub ocsf: Option<OcsfOtlpConfig>,
 }
 
-/// Writes `enabled = true` so that a serialized config parses back to the
-/// same export.
-fn serialize_enabled_ocsf<S: serde::Serializer>(
-    ocsf: &Option<OcsfOtlpConfig>,
-    serializer: S,
-) -> Result<S::Ok, S::Error> {
-    #[derive(Serialize)]
-    struct Enabled<'a> {
-        enabled: bool,
-        #[serde(flatten)]
-        ocsf: &'a OcsfOtlpConfig,
-    }
-    ocsf.as_ref()
-        .map(|ocsf| Enabled {
-            enabled: true,
-            ocsf,
-        })
+/// Where supervisors relay agent traces, resolved from
+/// `[otlp.traces.agent]`, `[otlp.traces]`, and `[otlp]`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum AgentTraces {
+    /// The relay exports agent traces to this collector.
+    Endpoint(String),
+    /// `[otlp.traces.agent] enabled = false` turns the relay off.
+    Disabled,
+    /// No agent table and no trace endpoint to default to.
+    #[default]
+    Unresolved,
+}
+
+/// Writes the resolved endpoints explicitly, including `enabled = true` for
+/// OCSF and `enabled = false` for a disabled agent trace table, so that a
+/// serialized config parses back to the same export.
+impl Serialize for OtlpConfig {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Agent<'a> {
+            #[serde(skip_serializing_if = "Option::is_none")]
+            enabled: Option<bool>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            endpoint: Option<&'a str>,
+        }
+        #[derive(Serialize)]
+        struct Traces<'a> {
+            #[serde(skip_serializing_if = "Option::is_none")]
+            endpoint: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            agent: Option<Agent<'a>>,
+        }
+        #[derive(Serialize)]
+        struct EnabledOcsf<'a> {
+            enabled: bool,
+            #[serde(flatten)]
+            ocsf: &'a OcsfOtlpConfig,
+        }
+        #[derive(Serialize)]
+        struct Otlp<'a> {
+            #[serde(skip_serializing_if = "Option::is_none")]
+            service_name: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            traces: Option<Traces<'a>>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            ocsf: Option<EnabledOcsf<'a>>,
+        }
+
+        let agent = match &self.agent_traces {
+            AgentTraces::Endpoint(endpoint) => Some(Agent {
+                enabled: None,
+                endpoint: Some(endpoint),
+            }),
+            AgentTraces::Disabled => Some(Agent {
+                enabled: Some(false),
+                endpoint: None,
+            }),
+            AgentTraces::Unresolved => None,
+        };
+        let endpoint = self.traces_endpoint();
+        let traces = (endpoint.is_some() || agent.is_some()).then_some(Traces { endpoint, agent });
+        Otlp {
+            service_name: self.service_name.as_deref(),
+            traces,
+            ocsf: self.ocsf.as_ref().map(|ocsf| EnabledOcsf {
+                enabled: true,
+                ocsf,
+            }),
+        }
         .serialize(serializer)
+    }
 }
 
 impl OtlpConfig {
     /// The collector that receives traces, when trace export is enabled.
     pub fn traces_endpoint(&self) -> Option<&str> {
         self.traces.as_ref().map(|traces| traces.endpoint.as_str())
+    }
+
+    /// The collector that supervisors relay agent traces to, when the relay
+    /// has one.
+    pub fn agent_traces_endpoint(&self) -> Option<&str> {
+        match &self.agent_traces {
+            AgentTraces::Endpoint(endpoint) => Some(endpoint),
+            AgentTraces::Disabled | AgentTraces::Unresolved => None,
+        }
     }
 }
 
@@ -377,6 +436,17 @@ struct RawOtlpConfig {
 struct RawOtlpTraces {
     #[serde(default)]
     endpoint: Option<String>,
+    #[serde(default)]
+    agent: Option<RawOtlpAgentTraces>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawOtlpAgentTraces {
+    #[serde(default)]
+    endpoint: Option<String>,
+    #[serde(default)]
+    enabled: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -399,11 +469,33 @@ impl TryFrom<RawOtlpConfig> for OtlpConfig {
                 format!("otlp.{table} needs an endpoint, or otlp.endpoint to default to")
             })
         };
-        let traces = match raw.traces {
-            Some(traces) => Some(endpoint_for("traces", traces.endpoint)?),
-            None => raw.endpoint.clone(),
-        }
-        .map(|endpoint| OtlpTracesConfig { endpoint });
+        let (traces, agent) = match raw.traces {
+            // TOML creates `[otlp.traces]` for `[otlp.traces.agent]`, so the
+            // trace table needs no endpoint of its own when it carries one.
+            Some(RawOtlpTraces {
+                endpoint,
+                agent: Some(agent),
+            }) => (endpoint.or_else(|| raw.endpoint.clone()), Some(agent)),
+            Some(RawOtlpTraces {
+                endpoint,
+                agent: None,
+            }) => (Some(endpoint_for("traces", endpoint)?), None),
+            None => (raw.endpoint.clone(), None),
+        };
+        let agent_traces = match agent {
+            Some(agent) if agent.enabled == Some(false) => AgentTraces::Disabled,
+            Some(agent) => AgentTraces::Endpoint(
+                agent.endpoint.or_else(|| traces.clone()).ok_or_else(|| {
+                    "otlp.traces.agent needs an endpoint, or otlp.traces.endpoint or \
+                     otlp.endpoint to default to"
+                        .to_string()
+                })?,
+            ),
+            None => traces
+                .clone()
+                .map_or(AgentTraces::Unresolved, AgentTraces::Endpoint),
+        };
+        let traces = traces.map(|endpoint| OtlpTracesConfig { endpoint });
         let ocsf = raw
             .ocsf
             .filter(|ocsf| ocsf.enabled)
@@ -414,12 +506,17 @@ impl TryFrom<RawOtlpConfig> for OtlpConfig {
                 })
             })
             .transpose()?;
-        if traces.is_none() && ocsf.is_none() {
-            return Err("otlp needs an endpoint, or otlp.ocsf with enabled = true".to_string());
+        if traces.is_none() && ocsf.is_none() && !matches!(agent_traces, AgentTraces::Endpoint(_)) {
+            return Err(
+                "otlp needs an endpoint, otlp.traces.agent with an endpoint, or otlp.ocsf \
+                 with enabled = true"
+                    .to_string(),
+            );
         }
         Ok(Self {
             service_name: raw.service_name,
             traces,
+            agent_traces,
             ocsf,
         })
     }
@@ -1221,6 +1318,165 @@ service_name = "openshell-gateway-dev"
         let encoded = toml::to_string(&file).unwrap();
         let decoded = toml::from_str::<ConfigFile>(&encoded).unwrap();
         assert_eq!(decoded.openshell.gateway.otlp, file.openshell.gateway.otlp);
+    }
+
+    /// Parses `table`, checks that it serializes back to the same
+    /// configuration, and returns it.
+    fn otlp_round_trip(table: &str) -> OtlpConfig {
+        let tmp = write_tmp(table);
+        let file = load(tmp.path()).unwrap_or_else(|error| panic!("{table}: {error:#}"));
+        let encoded = toml::to_string(&file).unwrap();
+        let decoded = toml::from_str::<ConfigFile>(&encoded)
+            .unwrap_or_else(|error| panic!("{encoded}: {error:#}"));
+        assert_eq!(
+            decoded.openshell.gateway.otlp, file.openshell.gateway.otlp,
+            "{encoded}"
+        );
+        file.openshell.gateway.otlp.expect("otlp config")
+    }
+
+    fn otlp_error(table: &str) -> String {
+        let tmp = write_tmp(table);
+        format!(
+            "{:#}",
+            load(tmp.path()).expect_err(&format!("accepted {table}"))
+        )
+    }
+
+    #[test]
+    fn otlp_agent_traces_override_the_shared_endpoint() {
+        let otlp = otlp_round_trip(
+            "[openshell.gateway.otlp]\nendpoint = 'http://shared:4317'\n\n\
+             [openshell.gateway.otlp.traces.agent]\nendpoint = 'http://agents:4317'\n",
+        );
+        assert_eq!(otlp.traces_endpoint(), Some("http://shared:4317"));
+        assert_eq!(otlp.agent_traces_endpoint(), Some("http://agents:4317"));
+    }
+
+    #[test]
+    fn otlp_agent_traces_override_the_trace_endpoint() {
+        let otlp = otlp_round_trip(
+            "[openshell.gateway.otlp.traces]\nendpoint = 'http://traces:4317'\n\n\
+             [openshell.gateway.otlp.traces.agent]\nendpoint = 'http://agents:4317'\n",
+        );
+        assert_eq!(otlp.traces_endpoint(), Some("http://traces:4317"));
+        assert_eq!(otlp.agent_traces_endpoint(), Some("http://agents:4317"));
+    }
+
+    #[test]
+    fn otlp_agent_traces_default_to_the_trace_endpoint() {
+        for (table, expected) in [
+            (
+                "[openshell.gateway.otlp]\nendpoint = 'http://shared:4317'\n",
+                "http://shared:4317",
+            ),
+            (
+                "[openshell.gateway.otlp.traces]\nendpoint = 'http://traces:4317'\n",
+                "http://traces:4317",
+            ),
+            (
+                "[openshell.gateway.otlp]\nendpoint = 'http://shared:4317'\n\n\
+                 [openshell.gateway.otlp.traces.agent]\nenabled = true\n",
+                "http://shared:4317",
+            ),
+            (
+                "[openshell.gateway.otlp]\nendpoint = 'http://shared:4317'\n\n\
+                 [openshell.gateway.otlp.traces]\nendpoint = 'http://traces:4317'\n\n\
+                 [openshell.gateway.otlp.traces.agent]\nenabled = true\n",
+                "http://traces:4317",
+            ),
+        ] {
+            let otlp = otlp_round_trip(table);
+            assert_eq!(otlp.traces_endpoint(), Some(expected), "{table}");
+            assert_eq!(otlp.agent_traces_endpoint(), Some(expected), "{table}");
+        }
+    }
+
+    #[test]
+    fn otlp_agent_traces_need_an_endpoint_to_default_to() {
+        for table in [
+            "[openshell.gateway.otlp.ocsf]\nenabled = true\nendpoint = 'http://siem:4317'\n\n\
+             [openshell.gateway.otlp.traces.agent]\n",
+            "[openshell.gateway.otlp.ocsf]\nenabled = true\nendpoint = 'http://siem:4317'\n\n\
+             [openshell.gateway.otlp.traces.agent]\nenabled = true\n",
+        ] {
+            let error = otlp_error(table);
+            assert!(
+                error.contains(
+                    "otlp.traces.agent needs an endpoint, or otlp.traces.endpoint or \
+                     otlp.endpoint to default to"
+                ),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn otlp_agent_traces_alone_relay_without_infrastructure_traces() {
+        let otlp = otlp_round_trip(
+            "[openshell.gateway.otlp.traces.agent]\nendpoint = 'http://agents:4317'\n",
+        );
+        assert_eq!(otlp.traces, None);
+        assert_eq!(otlp.ocsf, None);
+        assert_eq!(
+            otlp.agent_traces,
+            AgentTraces::Endpoint("http://agents:4317".into())
+        );
+        let error = otlp_error("[openshell.gateway.otlp.traces]\n");
+        assert!(error.contains("otlp.traces needs an endpoint"), "{error}");
+    }
+
+    #[test]
+    fn otlp_agent_traces_can_be_disabled() {
+        for agent in [
+            "enabled = false\n",
+            "enabled = false\nendpoint = 'http://agents:4317'\n",
+        ] {
+            let otlp = otlp_round_trip(&format!(
+                "[openshell.gateway.otlp]\nendpoint = 'http://shared:4317'\n\n\
+                 [openshell.gateway.otlp.traces.agent]\n{agent}"
+            ));
+            assert_eq!(otlp.agent_traces, AgentTraces::Disabled, "{agent}");
+            assert_eq!(otlp.agent_traces_endpoint(), None, "{agent}");
+            assert_eq!(
+                otlp.traces_endpoint(),
+                Some("http://shared:4317"),
+                "{agent}"
+            );
+        }
+        let otlp = otlp_round_trip(
+            "[openshell.gateway.otlp.ocsf]\nenabled = true\nendpoint = 'http://siem:4317'\n\n\
+             [openshell.gateway.otlp.traces.agent]\nenabled = false\n",
+        );
+        assert_eq!(otlp.agent_traces, AgentTraces::Disabled);
+        assert_eq!(otlp.traces_endpoint(), None);
+    }
+
+    #[test]
+    fn otlp_disabled_agent_traces_alone_enable_nothing() {
+        let error = otlp_error("[openshell.gateway.otlp.traces.agent]\nenabled = false\n");
+        assert!(error.contains("otlp needs an endpoint"), "{error}");
+        assert!(error.contains("otlp.traces.agent"), "{error}");
+    }
+
+    #[test]
+    fn otlp_agent_traces_pass_blank_or_padded_endpoints_to_the_supervisor() {
+        for endpoint in ["", "  ", " http://agents:4317 "] {
+            let otlp = otlp_round_trip(&format!(
+                "[openshell.gateway.otlp]\nendpoint = 'http://shared:4317'\n\n\
+                 [openshell.gateway.otlp.traces.agent]\nendpoint = '{endpoint}'\n"
+            ));
+            assert_eq!(otlp.agent_traces_endpoint(), Some(endpoint), "{endpoint:?}");
+        }
+    }
+
+    #[test]
+    fn otlp_agent_traces_reject_unknown_fields() {
+        let error = otlp_error(
+            "[openshell.gateway.otlp]\nendpoint = 'http://shared:4317'\n\n\
+             [openshell.gateway.otlp.traces.agent]\nendpoint = 'http://agents:4317'\nheaders = 'x'\n",
+        );
+        assert!(error.contains("headers"), "{error}");
     }
 
     #[test]
